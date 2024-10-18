@@ -2,7 +2,7 @@ from .points import PointCloud
 
 from .points import POINTSCLOUD_REGISTRY
 
-def parse_point_cloud(cfg, datapipeline):
+def parse_point_cloud(cfg, datapipeline) -> PointCloud:
     
     if len(cfg) == 0:
         return None

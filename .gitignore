@@ -167,3 +167,5 @@ _build/
 
 __pycache__/
 wandb/
+
+exp
