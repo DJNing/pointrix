@@ -347,6 +347,11 @@ class MsplatOrthoRender(BaseObject):
                 render_feat_dict['opacity'] = torch.ones_like(opacity)
             if 'depth' in render_feat_name:
                 render_feat_dict['depth'] = depth
+            if 'flow' in render_feat_name:
+                render_feat_dict['flow'] = kwargs.get('previous_pos')
+            if 'pose' in render_feat_name:
+                render_feat_dict['pose'] = position
+                pass
                 
         Render_Features = RenderFeatures(**render_feat_dict)
         
@@ -386,20 +391,30 @@ class MsplatOrthoRender(BaseObject):
             
         
         # render flow
-        render_attributes_list = kwargs.get("render_attributes_list", [])
-        if self.cfg.render_flow:
-            if len(render_attributes_list) > 0:
-                attributes_dict = {x : kwargs[x] for x in render_attributes_list}
-                Render_Features_extend = RenderFeatures(**attributes_dict)
+        # render_attributes_list = kwargs.get("render_attributes_list", [])
+        # if self.cfg.render_flow:
+        #     if len(render_attributes_list) > 0:
+        #         attributes_dict = {x : kwargs[x] for x in render_attributes_list}
+        #         Render_Features_extend = RenderFeatures(**attributes_dict)
 
-                render_features_extend = Render_Features_extend.combine()
+        #         render_features_extend = Render_Features_extend.combine()
 
-                bg_color = 0.0
-                rendered_features_extent = msplat.alpha_blending(
-                    uv, conic, opacity.detach(), render_features_extend,
-                    gaussian_ids_sorted, tile_range, bg_color, width, height, ndc.detach()
-                )
-                rendered_features_split.update(Render_Features_extend.split(rendered_features_extent))
+        #         bg_color = 0.0
+        #         rendered_features_extent = msplat.alpha_blending(
+        #             uv, conic, opacity.detach(), render_features_extend,
+        #             gaussian_ids_sorted, tile_range, bg_color, width, height, ndc.detach()
+        #         )
+        #         rendered_features_split.update(Render_Features_extend.split(rendered_features_extent))
+        
+        if 'flow' in render_feat_name:
+            Render_Features_extend = RenderFeatures(**{'pose_opa': position})
+            rendered_features_extend = msplat.alpha_blending(
+            uv, conic, torch.ones_like(opacity), render_features,
+            gaussian_ids_sorted, tile_range, self.bg_color, width, height, ndc.detach()
+            )
+            rendered_features_extend_split = Render_Features_extend.split(rendered_features_extend)
+            rendered_features_split.update(rendered_features_extend_split)
+            pass
             
 
         return {"rendered_features_split": rendered_features_split,

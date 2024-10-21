@@ -98,7 +98,7 @@ class PointCloud(BaseModule):
         """
         self.prefix_name = name + "."
 
-    def register_atribute(self, name:str, value:Float[Tensor, "3 1"], trainable=True) -> None:
+    def register_attribute(self, name:str, value:Float[Tensor, "3 1"], trainable=True) -> None:
         """
         register trainable atribute of the point cloud.
         
@@ -114,8 +114,8 @@ class PointCloud(BaseModule):
         Examples
         --------
         >>> point_cloud = PointsCloud(cfg)
-        >>> point_cloud.register_atribute('position', position)
-        >>> point_cloud.register_atribute('rgb', rgb)
+        >>> point_cloud.register_attribute('position', position)
+        >>> point_cloud.register_attribute('rgb', rgb)
         """
         self.register_buffer(name, value)
         if self.cfg.trainable and trainable:

@@ -571,3 +571,52 @@ def depth_loss_dpt(pred_depth, gt_depth, weight=None, mask=None):
     else:
         loss = F.mse_loss(pred_depth_n, gt_depth_n)
     return loss
+
+def parse_tapir_track_info(occlusions, expected_dist):
+    """
+    return:
+        valid_visible: mask of visible & confident points
+        valid_invisible: mask of invisible & confident points
+        confidence: clamped confidence scores (all < 0.5 -> 0)
+    """
+    visiblility = 1 - F.sigmoid(occlusions)
+    confidence = 1 - F.sigmoid(expected_dist)
+    valid_visible = visiblility * confidence > 0.5
+    valid_invisible = (1 - visiblility) * confidence > 0.5
+    # set all confidence < 0.5 to 0
+    confidence = confidence * (valid_visible | valid_invisible).float()
+    return valid_visible, valid_invisible, confidence
+
+def denormalize_coords(coords, h, w, no_shift=False):
+    assert coords.shape[-1] == 2
+    if no_shift:
+        # return coords * torch.tensor([w-1., h-1.], device=coords.device) / 2.
+        return coords * torch.tensor([w, h], device=coords.device) / 2.
+    else:
+        # return (coords + 1.) * torch.tensor([w-1., h-1.], device=coords.device) / 2.
+        return (coords + 1.) * torch.tensor([w, h], device=coords.device) / 2.
+
+
+def masked_l1_loss(pred, gt, mask=None, normalize=True, quantile=1):
+    """
+    Parameters
+    ----------
+    pred : torch.Tensor
+        [batch, d]
+    gt : torch.Tensor
+        [batch, d]
+    mask : torch.Tensor
+        [batch, d]
+    """
+    if mask is None:
+        raise ValueError('mask can not be None!')
+    else:
+        sum_loss = F.l1_loss(pred, gt, reduction='none').mean(dim=-1, keepdim=True)
+        loss_at_quantile = torch.quantile(sum_loss, quantile)
+        quantile_mask = (sum_loss <= loss_at_quantile).squeeze(-1)
+        ndim = sum_loss.shape[-1]
+        if normalize:
+            return torch.sum((sum_loss * mask)[quantile_mask]) / (ndim * torch.sum(mask[quantile_mask]) + 1e-8)
+        else:
+            return torch.mean((sum_loss * mask)[quantile_mask])
+

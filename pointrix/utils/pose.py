@@ -42,7 +42,7 @@ def unitquat_to_rotmat(quat):
     Converts unit quaternion into rotation matrix representation.
 
     Args:
-        quat (...x4 tensor, XYZW convention): batch of unit quaternions.
+        quat (...x4 tensor, WXYZ convention): batch of unit quaternions.
             No normalization is applied before computation.
     Returns:
         batch of rotation matrices (...x3x3 tensor).
@@ -134,3 +134,24 @@ def GetCamcenter(Rt: Float[Tensor, "4 4"]) -> Float[Tensor, "3 1"]:
     Get the camera center from the view matrix `Rt`
     """
     return Rt.transpose(0, 1).inverse()[3, :3]
+
+
+def apply_quaternion(q1:torch.Tensor, q2:torch.Tensor):
+    # Extract components: remember q1 and q2 are [N, 4] where the last dim is WXYZ
+    # Here w is the scalar part.
+
+    # q1 components
+    w1, x1, y1, z1 = q1[:, 0], q1[:, 1], q1[:, 2], q1[:, 3]
+    # q2 components
+    w2, x2, y2, z2 = q2[:, 0], q2[:, 1], q2[:, 2], q2[:, 3]
+
+    # Compute the product: result components
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+
+    # Concatenate the result into a single tensor
+    result = torch.stack((x, y, z, w), dim=1)
+
+    return result

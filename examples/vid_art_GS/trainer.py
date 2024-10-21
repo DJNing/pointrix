@@ -113,6 +113,7 @@ class ArtVidTrainer():
         # self.model.point_cloud.features.requires_grad = False
         # self.model.point_cloud.features_rest.requires_grad = False
         
+        # render_features = ['rgb', 'depth', 'opacity']
         render_features = ['rgb', 'depth', 'opacity']
         self.init_prune()
         self.call_hook('before_init_train')
@@ -146,12 +147,16 @@ class ArtVidTrainer():
             print('finish init training, check results')
             pred_depth = render_results['depth'].view(self.h, self.w).detach().cpu().numpy()
             pred_opacity = render_results['opacity'].view(self.h, self.w).detach().cpu().numpy()
-            pred_rgb = render_results['rgb'].view(3, self.h, self.w).detach().cpu().permute(1, 2, 0).numpy()
+            try:
+                pred_rgb = render_results['rgb'].view(3, self.h, self.w).detach().cpu().permute(1, 2, 0).numpy()
+                    
+                imageio.imwrite(str(self.debug_path / 'debug_rgb.png'), pred_rgb)
+            except:
+                pass
             import imageio
             imageio.imwrite(str(self.debug_path / 'gt_depth.png'), batch['depth1'])
             imageio.imwrite(str(self.debug_path / 'debug_depth.png'), pred_depth)
             imageio.imwrite(str(self.debug_path / 'debug_opa.png'), pred_opacity)
-            imageio.imwrite(str(self.debug_path / 'debug_rgb.png'), pred_rgb)
             self.position_to_ply(str(self.debug_path / 'init_pcd.ply'))
             
             
@@ -179,10 +184,11 @@ class ArtVidTrainer():
         
     def construct_learnable_motion_param(self):
         init_qua = torch.zeros([self.cfg.pose_free.k_clusters, 4], device=self.device)
+        init_qua[:, 0] = 1
         init_trans = torch.zeros([self.cfg.pose_free.k_clusters, 3], device=self.device)
         param_dict = {
-            'quaternion': torch.nn.Parameter(init_qua),
-            'translation': torch.nn.Parameter(init_trans)
+            'quaternion': torch.nn.Parameter(init_qua, requires_grad=True),
+            'translation': torch.nn.Parameter(init_trans, requires_grad=True)
         }
         self.motion_list += [param_dict]
         pass
@@ -196,25 +202,55 @@ class ArtVidTrainer():
         # for att in pcd_attrs:
         #     cur_att = getattr(pcd, att['name'])
         #     cur_att.requires_grad_ = False
-        
+        render_features = ['rgb', 'depth', 'opacity', 'flow']
         self.model.point_cloud.eval()
-        kms_one_hot = self.run_kmeans()
+        # kms_one_hot = self.run_kmeans()
         self.construct_learnable_motion_param()
-        for i in self.cfg.pose_free.motion_steps:
+        self.construct_motion_optimizer()
+        self.model.run_kmeans(self.cfg.pose_free.k_clusters)
+        for i in range(self.cfg.pose_free.motion_steps):
+            render_results = self.model(batch, render_features=render_features, motion_params=self.motion_list[0])
+            self.model.get_motion_loss_dict(render_results, batch)
             pass
         
-    def init_motion_optimizer(self):
-        self.motion_optimizer = None
-        self.motion_scheduler = None
-        pass
+    def construct_motion_optimizer(self):
+        
+        init_q_lr = self.cfg.pose_free.init_q_lr
+        end_q_lr = self.cfg.pose_free.end_q_lr
+        init_t_lr = self.cfg.pose_free.init_t_lr
+        end_t_lr = self.cfg.pose_free.end_t_lr
+        max_steps = self.cfg.pose_free.motion_steps
+        
+        lambda_q_lr = lambda epoch: (init_q_lr - end_q_lr) * (1 - epoch / max_steps) + end_q_lr
+        lambda_t_lr = lambda epoch: (init_t_lr - end_t_lr) * (1 - epoch / max_steps) + end_t_lr
+        
+        labmda_lrs = [
+            lambda_q_lr,
+            lambda_t_lr
+        ]
+        
+        motion_params = self.motion_list[-1]
+        param_group_list = [
+            {
+                'params': motion_params['quaternion'],
+                'lr': init_q_lr
+             },
+            {
+                'params': motion_params['translation'],
+                'lr': init_t_lr
+            }
+        ]
+        self.motion_optimizer = torch.optim.Adam(param_group_list)
+        self.motion_scheduler = torch.optim.lr_scheduler.LambdaLR(self.motion_optimizer, lr_lambda=labmda_lrs)
+        
         
         
     def run_kmeans(self):
         from torch_kmeans import KMeans
         model = KMeans(n_clusters=self.cfg.pose_free.k_clusters)
-        pts = self.model.point_cloud.position
+        pts = self.model.point_cloud.position.unsqueeze(0)
         label = model(pts)
-        label_one_hot = torch.nn.functional.one_hot(label, num_classes=self.cfg.pose_free.k_clusters)
+        label_one_hot = torch.nn.functional.one_hot(label.labels.view(-1), num_classes=self.cfg.pose_free.k_clusters)
         return label_one_hot
 
     

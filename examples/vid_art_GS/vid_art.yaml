@@ -8,7 +8,11 @@ trainer:
   pose_free:
     debug: True
     geo_steps: 3000
-    motion_steps: 1000
+    motion_steps: 3000
+    init_q_lr: 1e-3
+    end_q_lr: 1e-5
+    init_t_lr: 1e-3
+    end_t_lr: 1e-5
     color_steps: 10000
     k_clusters: 512
 
@@ -37,6 +41,9 @@ trainer:
 
   controller:
     normalize_grad: False
+    # min_opacity: 0.1
+    # duplicate_interval: 200
+    # prune_interval: 200
 
   optimizer:
     optimizer_1:

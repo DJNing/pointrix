@@ -37,6 +37,7 @@ def main(args, extras) -> None:
     
     batch_init = dataset.__getitem__(0)
     gaussian_trainer.train_init(batch_init)
+    gaussian_trainer.update_motion(batch_init)
     #     if cfg.trainer.training:
     #         gaussian_trainer.train_loop()
     #         model_path = os.path.join(

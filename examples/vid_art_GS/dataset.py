@@ -195,11 +195,15 @@ class PoseFreeGSDataset(Dataset):
         depth_2 = np.load(self.detph_files[id2])
         
         # load opt flow
+        pos1_fname = f'{id1:04d}_{id1:04d}.npy'
+        pos2_fname = f'{id2:04d}_{id2:04d}.npy'
         fw_flow_name = f'{id1:04d}_{id2:04d}.npy'
         bw_flow_name = f'{id2:04d}_{id1:04d}.npy'
         
         fw_flow = np.load(str(self.flow_dir / fw_flow_name))
         bw_flow = np.load(str(self.flow_dir / bw_flow_name))
+        pos1 = np.load(str(self.flow_dir/pos1_fname))
+        pos2 = np.load(str(self.flow_dir/pos2_fname))
         
         data = {
             'id1': id1,
@@ -211,7 +215,16 @@ class PoseFreeGSDataset(Dataset):
             'depth1': depth_1,
             'depth2': depth_2,
             'fw_flow': fw_flow,
-            'bw_flow': bw_flow
+            'bw_flow': bw_flow,
+            'flow_pos1': pos1,
+            'flow_pos2': pos2
         }
+        
+        # return_dict = {}
+        # for k, v in data.items():
+        #     try:
+        #         return_dict.update({k: torch.from_numpy(v)})
+        #     except:
+        #         return_dict.update({k: v})
         
         return data
