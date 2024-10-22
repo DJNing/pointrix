@@ -14,6 +14,9 @@ from pointrix.model import parse_model
 from pointrix.controller.gs import DensificationController
 from hook import ArtVidLogHook
 
+class pseudo_datapipeline:
+    point_cloud: None
+        
 class ArtVidTrainer():
     """
     The default trainer class for training and testing the model.
@@ -68,6 +71,7 @@ class ArtVidTrainer():
 
     cfg: Config
 
+    
     def __init__(self, cfg: Config, exp_dir: P, name: str, h, w, init_pcd=None) -> None:
         # super().__init__()
         self.exp_dir = exp_dir
@@ -83,8 +87,13 @@ class ArtVidTrainer():
         self.white_bg = False
         # self.hooks = parse_hooks(self.cfg.hooks)
         # prepare model
+        # @dataclass
+        
+            
+        pipeline = pseudo_datapipeline()
+        pipeline.point_cloud = init_pcd
         self.model = parse_model(
-            self.cfg.model, init_pcd, device=self.device)
+            self.cfg.model, pipeline, device=self.device)
         self.model.h = self.h
         self.model.w = self.w
         self.model.construct_train_cam()
@@ -112,17 +121,22 @@ class ArtVidTrainer():
         # freeze color features before training
         # self.model.point_cloud.features.requires_grad = False
         # self.model.point_cloud.features_rest.requires_grad = False
+        # self.model.point_cloud.features_rest.opacity = False
+        # self.model.point_cloud.features_rest.scale = False
         
         # render_features = ['rgb', 'depth', 'opacity']
-        render_features = ['rgb', 'depth', 'opacity']
+        render_features = ['rgb', 'depth', 'opacity', 'pose']
         self.init_prune()
         self.call_hook('before_init_train')
+        mask = torch.from_numpy(batch['mask1']).to(self.device)
+        bool_mask = mask > 0
         for i in range(self.cfg.pose_free.geo_steps):
             render_results = self.model(batch, render_features=render_features)
             
             # self.loss_dict = self.model.get_loss_dict(render_results, batch)
             self.loss_dict = self.model.get_init_loss_dict(render_results, batch)
             self.loss_dict['loss'].backward()
+            loss_value = self.loss_dict['loss'].item()
             # structure of optimizer_dict: {}
             # example of optimizer_dict = {
             #   "loss": loss,
@@ -142,7 +156,11 @@ class ArtVidTrainer():
                 self.optimizer.update_model(**self.optimizer_dict)
             self.init_step += 1
             self.call_hook('after_init_train_iter')
-            
+            if loss_value < 0.07:
+                break
+            # if self.init_step % 200 == 0:
+            #     self.prune_given_valid_mask(bool_mask)
+        self.call_hook('after_geo_init')
         if self.cfg.pose_free.debug:
             print('finish init training, check results')
             pred_depth = render_results['depth'].view(self.h, self.w).detach().cpu().numpy()
@@ -170,6 +188,11 @@ class ArtVidTrainer():
         self.model.point_cloud.remove_points(valid_mask, self.controller.optimizer)
         self.controller.prune_postprocess(valid_mask)
         pass
+    
+    def prune_given_valid_mask(self, valid_mask):
+        self.model.point_cloud.remove_points(valid_mask, self.controller.optimizer)
+        self.controller.prune_postprocess(valid_mask)
+        # pass
     
     
     def position_to_ply(self, fname, tensor=None):
@@ -202,15 +225,46 @@ class ArtVidTrainer():
         # for att in pcd_attrs:
         #     cur_att = getattr(pcd, att['name'])
         #     cur_att.requires_grad_ = False
-        render_features = ['rgb', 'depth', 'opacity', 'flow']
+        render_features = ['flow']
         self.model.point_cloud.eval()
         # kms_one_hot = self.run_kmeans()
         self.construct_learnable_motion_param()
         self.construct_motion_optimizer()
         self.model.run_kmeans(self.cfg.pose_free.k_clusters)
+        self.cur_motion_step = 0
+        self.call_hook('before_motion_update')
         for i in range(self.cfg.pose_free.motion_steps):
+            
+            self.motion_optimizer.zero_grad()
             render_results = self.model(batch, render_features=render_features, motion_params=self.motion_list[0])
-            self.model.get_motion_loss_dict(render_results, batch)
+            self.loss_dict = self.model.get_motion_loss_dict(render_results, batch)
+            loss = self.loss_dict['loss']
+            loss.backward()
+            self.motion_optimizer.step()
+            self.motion_scheduler.step()
+            
+            self.cur_motion_step += 1
+            self.call_hook('after_motion_update_iter')
+        
+        if self.cfg.pose_free.debug:
+            # visualize the flow result
+            from utils import denormalize_coords
+            from matplotlib import pyplot as plt
+            mask_pred_flow = render_results['mask_pred_flow'].detach().cpu().numpy()
+            flow_pos = batch['flow_pos1']
+            rgb1 = batch['rgb1']
+            rgb2 = batch['rgb2']
+            fw_flow = batch['fw_flow'][:, :2]
+            from utils import draw_points
+            import numpy as np
+            # rgb1_overlay = draw_points(rgb1)
+            pred_coord = np.round(mask_pred_flow)
+            rgb1_overlay = draw_points(rgb1, flow_pos[:, :2].astype(np.int16))
+            rgb2_overlay_pred = draw_points(rgb2, pred_coord.astype(np.int16))
+            rgb2_overlay = draw_points(rgb2, fw_flow.astype(np.int16))
+            plt.imsave(str(self.debug_path / 'rgb1_overlay.png'), rgb1_overlay)
+            plt.imsave(str(self.debug_path / 'rgb2_overlay.png'), rgb2_overlay)
+            plt.imsave(str(self.debug_path / 'rgb2_overlay_pred.png'), rgb2_overlay_pred)
             pass
         
     def construct_motion_optimizer(self):

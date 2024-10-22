@@ -620,3 +620,53 @@ def masked_l1_loss(pred, gt, mask=None, normalize=True, quantile=1):
         else:
             return torch.mean((sum_loss * mask)[quantile_mask])
 
+# def flow_to_image(flow_uv, clip_flow=None, convert_to_bgr=False):
+#     """
+#     Expects a two dimensional flow image of shape.
+
+#     Args:
+#         flow_uv (np.ndarray): Flow UV image of shape [H,W,2]
+#         clip_flow (float, optional): Clip maximum of flow values. Defaults to None.
+#         convert_to_bgr (bool, optional): Convert output image to BGR. Defaults to False.
+
+#     Returns:
+#         np.ndarray: Flow visualization image of shape [H,W,3]
+#     """
+#     assert flow_uv.ndim == 3 or flow_uv.ndim == 4, 'input flow must have three or four dimensions'
+#     assert flow_uv.shape[-1] == 2, 'input flow must have shape [..., H,W,2]'
+#     if clip_flow is not None:
+#         flow_uv = np.clip(flow_uv, 0, clip_flow)
+#     u = flow_uv[..., 0]
+#     v = flow_uv[..., 1]
+#     rad = np.sqrt(np.square(u) + np.square(v))
+#     rad_max = np.max(rad)
+#     epsilon = 1e-5
+#     u = u / (rad_max + epsilon)
+#     v = v / (rad_max + epsilon)
+#     if flow_uv.ndim == 4:
+#         return np.stack([flow_uv_to_colors(u_, v_, convert_to_bgr) for (u_, v_) in zip(u, v)], axis=0)
+#     else:
+#         return flow_uv_to_colors(u, v, convert_to_bgr)
+
+def draw_points(image, coordinates, color=(0, 1, 0), point_size=3):
+    """
+    Draws points on an image at given pixel coordinates.
+
+    Args:
+    image (np.array): The input image where points will be drawn.
+    coordinates (np.array): An array of pixel coordinates with shape [N, 2].
+    color (tuple): Color of the points (B, G, R).
+    point_size (int): Radius of the drawn points.
+
+    Returns:
+    np.array: The modified image with points drawn on it.
+    """
+    # Ensure the image is copied to avoid modifying the original image
+    image_with_points = image.copy()
+
+    # Draw each point from the coordinates array
+    for x, y in coordinates:
+        cv2.circle(image_with_points, (x, y), point_size, color, -1)
+        # print(x,y)
+    
+    return image_with_points

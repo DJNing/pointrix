@@ -27,7 +27,12 @@ def points_init(init_cfg, point_cloud):
         Logger.log("Number of points at initialisation : ", num_points)
         pos = get_random_points(num_points, init_cfg.radius)
         features = get_random_feauture(num_points, init_cfg.feat_dim)
-        
+    elif init_type == 'custom':
+        Logger.log("Number of points at initialisation : ", point_cloud.shape[0])
+        pos = torch.from_numpy(point_cloud).float()
+        num_points = pos.shape[0]
+        features = get_random_feauture(num_points, init_cfg.feat_dim)
+        # pass    
     else:
         Logger.log("Number of points at initialisation : ", point_cloud.positions.shape[0])
         pos = np.asarray(point_cloud.positions)
@@ -122,7 +127,8 @@ def gaussian_point_init(position, max_sh_degree, opc_init_scale=0.1):
     scales = torch.log(avg_dist).repeat(1, 3)
     # Efficiently create a batch of identity quaternions
     rots = torch.eye(4)[:1].repeat(num_points, 1)  
-    opacities = sigmoid_inv(opc_init_scale * torch.ones((num_points, 1), dtype=torch.float32))
+    # opacities = sigmoid_inv(opc_init_scale * torch.ones((num_points, 1), dtype=torch.float32))
+    opacities = torch.ones((num_points, 1), dtype=torch.float32)
     features_rest = torch.zeros(
         (num_points, (max_sh_degree+1) ** 2 - 1, 3),
         dtype=torch.float32

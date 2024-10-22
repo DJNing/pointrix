@@ -43,9 +43,9 @@ class VidArtModel(BaseModel):
         # initialization point cloud
         self.h = h
         self.w = w
-        pseudo_datapipeline = self.temp
-        setattr(pseudo_datapipeline, 'point_cloud', None)
-        self.point_cloud = parse_point_cloud(self.cfg.point_cloud, pseudo_datapipeline).to(device)
+        # pseudo_datapipeline = self.temp
+        # setattr(pseudo_datapipeline, 'point_cloud', None)
+        self.point_cloud = parse_point_cloud(self.cfg.point_cloud, datapipeline).to(device)
         self.renderer = parse_renderer(self.cfg.renderer, white_bg=False, device=device)
         self.point_cloud.set_prefix_name("point_cloud")
         self.device = device
@@ -138,45 +138,103 @@ class VidArtModel(BaseModel):
         }
     
     def get_pos_loss(self, render_results, batch):
+        flow_pos = torch.from_numpy(batch['flow_pos1']).to(self.device)
+        query_pixel = flow_pos[:, :2].to(torch.int64)
+        
         render_pos = render_results['pose'].permute(0, 2, 3, 1) # [1, h, w, 3]
+        pixel_mask = torch.zeros_like(render_pos[..., 0])
+        query_pixel = flow_pos[:, :2].to(torch.int64)
+        pixel_mask[0, query_pixel[:, 1], query_pixel[:, 0]] = 1
+        
+        pixel_mask_flatten = (pixel_mask.reshape(-1, self.h * self.w) > 0.5)
+        
+        
         pred_pos = denormalize_coords(render_pos[..., :2], self.h, self.w).view(1, -1, 2)
-        grid_i, gird_j = torch.meshgrid(torch.arange(self.h), torch.arange(self.w), indexing='ij')
-        pos_tensor = torch.stack((grid_i, gird_j), dim=-1).to(pred_pos).view(1, -1, 2)
-        mask = torch.from_numpy(batch['mask1']).to(pred_pos).view(1, -1)
-        mask_pred = pred_pos[mask>0]
-        mask_gt = pos_tensor[mask>0]
+        
+        
+        
+        mask_pred = pred_pos[pixel_mask_flatten>0]
+        mask_gt = query_pixel
         loss = 1e-2 * torch.nn.functional.l1_loss(mask_pred, mask_gt)
         return loss
     
-    def get_motion_loss_dict(self, render_results, batch) -> dict:
-        flow_pos = torch.from_numpy(batch['flow_pos2']).to(self.device) #[N, 4], with 4 as [u, v, occlusions, confidence]
-        bw_flow = torch.from_numpy(batch['bw_flow']).to(self.device)
-        valid_visible, _, confidence = parse_tapir_track_info(bw_flow[..., 2], bw_flow[..., 3])
+    def get_fw_flow_loss(self, render_results, batch):
+        # flow is rendered in frame 1 pose, the render value would be the pose in frame 2
+        
+        # prepare gt
+        flow_pos = torch.from_numpy(batch['flow_pos1']).to(self.device)
+        query_pixel = flow_pos[:, :2].to(torch.int64)
+        fw_flow = torch.from_numpy(batch['fw_flow']).to(self.device)
+        valid_visible, _, confidence = parse_tapir_track_info(fw_flow[..., 2], fw_flow[..., 3])
         valid_visible = valid_visible.view(-1)
         confidence = confidence.view(-1)
         
+        # prediction
         render_flow = render_results['flow'].permute(0, 2, 3, 1) # [1, h, w, 3]
-        pred_bw_flow = denormalize_coords(render_flow[..., :2], self.h, self.w)
-        
-        pixel_mask = torch.zeros_like(pred_bw_flow[..., 0])
-        
+        pred_fw_flow = denormalize_coords(render_flow[..., :2], self.h, self.w)
+        pixel_mask = torch.zeros_like(pred_fw_flow[..., 0])
         query_pixel = flow_pos[:, :2].to(torch.int64)
-        pixel_mask[0, query_pixel[:, 0], query_pixel[:, 1]] = 1
+        pixel_mask[0, query_pixel[:, 1], query_pixel[:, 0]] = 1
         pixel_mask_flatten = (pixel_mask.reshape(-1, self.h * self.w) > 0.5)
-        # pred_bw_flow = pred_bw_flow.view(-1, self.w * self.h, 2)
-        # mask_pred_flow = pred_bw_flow[pixel_mask_flatten][valid_visible]
         
         mask_pred_flow = self.collect_valid_pos(render_flow, pixel_mask_flatten, valid_visible)
-        mask_gt_flow = bw_flow[valid_visible][..., :2]
-        
+        mask_gt_flow = fw_flow[valid_visible][..., :2]
+        render_results.update({'mask_pred_flow': mask_pred_flow})
         flow_loss = masked_l1_loss(
             mask_pred_flow,
             mask_gt_flow,
             mask = confidence[valid_visible],
             quantile=0.98
         ) / max(self.h, self.w)
-        
         return flow_loss
+    
+    def get_motion_reg(self, render_results, batch):
+        pass
+    
+    def get_rigid_reg(self, render_results, batch):
+        pass
+    
+    def get_motion_loss_dict(self, render_results, batch) -> dict:
+        # flow_pos = torch.from_numpy(batch['flow_pos2']).to(self.device) #[N, 4], with 4 as [u, v, occlusions, confidence]
+        # bw_flow = torch.from_numpy(batch['bw_flow']).to(self.device)
+        # valid_visible, _, confidence = parse_tapir_track_info(bw_flow[..., 2], bw_flow[..., 3])
+        # valid_visible = valid_visible.view(-1)
+        # confidence = confidence.view(-1)
+        
+        # render_flow = render_results['flow'].permute(0, 2, 3, 1) # [1, h, w, 3]
+        # pred_bw_flow = denormalize_coords(render_flow[..., :2], self.h, self.w)
+        
+        # pixel_mask = torch.zeros_like(pred_bw_flow[..., 0])
+        
+        # query_pixel = flow_pos[:, :2].to(torch.int64)
+        # pixel_mask[0, query_pixel[:, 1], query_pixel[:, 0]] = 1
+        # pixel_mask_flatten = (pixel_mask.reshape(-1, self.h * self.w) > 0.5)
+        # # pred_bw_flow = pred_bw_flow.view(-1, self.w * self.h, 2)
+        # # mask_pred_flow = pred_bw_flow[pixel_mask_flatten][valid_visible]
+        
+        # mask_pred_flow = self.collect_valid_pos(render_flow, pixel_mask_flatten, valid_visible)
+        # mask_gt_flow = bw_flow[valid_visible][..., :2]
+        # # from matplotlib import pyplot as plt
+        # # plt.imsave('debug_mask.png', pixel_mask.detach().cpu().squeeze(0).numpy())
+        # # plt.imsave('flow_0.png', pred_bw_flow[0,:, :, 0].detach().cpu().numpy())
+        
+        # flow_loss = masked_l1_loss(
+        #     mask_pred_flow,
+        #     mask_gt_flow,
+        #     mask = confidence[valid_visible],
+        #     quantile=0.98
+        # ) / max(self.h, self.w)
+        
+        # return flow_loss
+        flow_loss = self.get_fw_flow_loss(render_results, batch)
+        
+        loss = flow_loss
+        loss_dict = {
+            'flow_loss': flow_loss,
+            'loss': loss
+        }
+        
+        return loss_dict
     
     def collect_valid_pos(self, pred, pixel_mask, valid_mask):
         pred_bw_flow = denormalize_coords(pred[..., :2], self.h, self.w)
@@ -242,10 +300,10 @@ class VidArtModel(BaseModel):
         pos = self.compute_dynamic_position(motion_params)
         rot = self.compute_dynamic_rotation(motion_params)
         render_dict = {
-            "position": pos,
+            "position": self.point_cloud.position,
             "opacity": self.point_cloud.get_opacity,
             "scaling": self.point_cloud.get_scaling,
-            "rotation": rot,
+            "rotation": self.point_cloud.get_rotation,
             "shs": self.point_cloud.get_shs,
             # camera params
             "extrinsic_matrix": extrinsic_matrix.to(self.device),
@@ -253,7 +311,9 @@ class VidArtModel(BaseModel):
             "camera_center": camera_center.unsqueeze(0).to(self.device),
             "height": self.h,
             "width": self.w,
-            "previous_pos": self.point_cloud.position
+            # "previous_pos": self.point_cloud.position,
+            "future_pos": pos,
+            "future_rot": rot
         }
         return render_dict
     

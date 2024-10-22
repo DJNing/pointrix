@@ -228,3 +228,18 @@ class PoseFreeGSDataset(Dataset):
         #         return_dict.update({k: v})
         
         return data
+
+    def get_init_pcd(self):
+        batch_data = self.__getitem__(0)
+        depth = batch_data['depth1']
+        # mask = batch_data['mask1']
+        pos = batch_data['flow_pos1'][:, :2].astype(np.int16)
+        pts_depth = depth[pos[:,0], pos[:,1]].reshape(-1, 1)
+        
+        # normalize pos
+        denorm = np.array([[self.w, self.h]])
+        pos_norm = pos / denorm * 2 - 1
+        
+        pts = np.concatenate([pos_norm, pts_depth], axis=-1)
+        return pts
+        # pass

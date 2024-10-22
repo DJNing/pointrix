@@ -27,12 +27,14 @@ def main(args, extras) -> None:
     # try:
     # cfg.h = dataset.h
     # cfg.w = dataset.w
+    init_pcd = dataset.get_init_pcd()
     gaussian_trainer = ArtVidTrainer(
                         cfg.trainer,
                         cfg.exp_dir,
                         cfg.name,
                         dataset.h,
-                        dataset.w
+                        dataset.w,
+                        init_pcd=init_pcd
                         )
     
     batch_init = dataset.__getitem__(0)

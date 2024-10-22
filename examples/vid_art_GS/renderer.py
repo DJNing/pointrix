@@ -348,7 +348,7 @@ class MsplatOrthoRender(BaseObject):
             if 'depth' in render_feat_name:
                 render_feat_dict['depth'] = depth
             if 'flow' in render_feat_name:
-                render_feat_dict['flow'] = kwargs.get('previous_pos')
+                render_feat_dict['flow'] = kwargs.get('future_pos')
             if 'pose' in render_feat_name:
                 render_feat_dict['pose'] = position
                 pass
@@ -407,7 +407,7 @@ class MsplatOrthoRender(BaseObject):
         #         rendered_features_split.update(Render_Features_extend.split(rendered_features_extent))
         
         if 'flow' in render_feat_name:
-            Render_Features_extend = RenderFeatures(**{'pose_opa': position})
+            Render_Features_extend = RenderFeatures(**{'pose_opa': kwargs.get('previous_pos')})
             rendered_features_extend = msplat.alpha_blending(
             uv, conic, torch.ones_like(opacity), render_features,
             gaussian_ids_sorted, tile_range, self.bg_color, width, height, ndc.detach()
