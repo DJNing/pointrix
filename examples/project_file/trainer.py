@@ -13,9 +13,7 @@ from pointrix.optimizer import parse_optimizer, parse_scheduler
 from pointrix.model import parse_model
 from pointrix.controller.gs import DensificationController
 from hook import ArtVidLogHook
-
-import imageio as imageio
-from PIL import Image
+import imageio
 import numpy as np
 from skimage import img_as_ubyte
 import open3d as o3d
@@ -114,17 +112,7 @@ class ArtVidTrainer():
          
         # motion optimization
         self.motion_list = []
-        self.construct_learnable_motion_param() # initialize param, identical transform
         
-        
-    def vis(self, camera_ext, motion_idx=0):
-        cur_motion = self.motion_list[motion_idx]
-        dynamic_render_dict = self.model.construct_dynamic_render_dict(motion_param=cur_motion)
-        empty_batch = {'test': 0}
-        dynamic_render_dict['extrinsic_matrix'] = camera_ext
-        render_results = self.model.render_dynamic(dynamic_render_dict, empty_batch)
-        
-        return render_results
         
     def setup(self):
         pass
@@ -147,10 +135,6 @@ class ArtVidTrainer():
         mask = torch.from_numpy(batch['mask1']).to(self.device)
         bool_mask = mask > 0
         for i in range(self.cfg.pose_free.geo_steps):
-            
-            # if self.init_step % 1000 == 0:
-            #     self.remove_floater_dbscan()
-                
             render_results = self.model(batch, render_features=render_features)
             
             # self.loss_dict = self.model.get_loss_dict(render_results, batch)
@@ -172,64 +156,33 @@ class ArtVidTrainer():
                 # mask grad
                 # self.model.point_cloud.features.grad_ *= 0
                 # self.model.point_cloud.features_rest.grad_ *= 0
-                
-                torch.nn.utils.clip_grad_value_(self.model.point_cloud.position, clip_value=1e-5)
-                
                 self.controller.f_step(**self.optimizer_dict)
                 self.optimizer.update_model(**self.optimizer_dict)
             self.init_step += 1
             self.call_hook('after_init_train_iter')
-            # if loss_value < 0.07:
-            #     break
+            if loss_value < 0.07:
+                break
             # if self.init_step % 200 == 0:
             #     self.prune_given_valid_mask(bool_mask)
         self.call_hook('after_geo_init')
         if self.cfg.pose_free.debug:
             print('finish init training, check results')
-            pred_depth = torch.clamp(render_results['depth'].view(self.h, self.w).detach().cpu(), 0.0, 1.0).numpy()
+            pred_depth = render_results['depth'].view(self.h, self.w).detach().cpu().numpy()
             pred_opacity = render_results['opacity'].view(self.h, self.w).detach().cpu().numpy()
             try:
-                pred_rgb = render_results['rgb'].view(3, self.h, self.w).detach().cpu().permute(1, 2, 0)
-                pred_rgb = torch.clamp(pred_rgb, 0.0, 1.0).numpy()
+                pred_rgb = render_results['rgb'].view(3, self.h, self.w).detach().cpu().permute(1, 2, 0).numpy()
                     
-                imageio.imwrite(str(self.debug_path / 'debug_rgb.png'), img_as_ubyte(pred_rgb))
+                imageio.imwrite(str(self.debug_path / 'debug_rgb.png'), pred_rgb)
             except:
                 pass
-            # img = Image.fromarray(batch['depth1'])
-            # img.save(str(self.debug_path / 'gt_depth.png'))
-            gt_depth = img_as_ubyte(batch['depth1'] / batch['depth1'].max())
-            imageio.imwrite(str(self.debug_path / 'gt_depth.png'), img_as_ubyte(gt_depth))
-            imageio.imwrite(str(self.debug_path / 'debug_depth.png'), img_as_ubyte(pred_depth))
-            imageio.imwrite(str(self.debug_path / 'debug_opa.png'), img_as_ubyte(pred_opacity))
+            import imageio
+            # imageio.imwrite(str(self.debug_path / 'gt_depth.png'), batch['depth1'])
+            # imageio.imwrite(str(self.debug_path / 'debug_depth.png'), pred_depth)
+            # imageio.imwrite(str(self.debug_path / 'debug_opa.png'), pred_opacity)
             self.position_to_ply(str(self.debug_path / 'init_pcd.ply'))
-            # self.remove_floater_dbscan()
-            # self.position_to_ply(str(self.debug_path / 'init_prune_pcd.ply'))
+            
             
         pass
-    
-    
-    def remove_floater_dbscan(self):
-        pos = self.model.point_cloud.position.detach().cpu().numpy()
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(pos)
-        labels = np.array(pcd.cluster_dbscan(eps=0.2, min_points=1000))
-        valid_mask = labels >= 0
-        valid_mask = torch.from_numpy(valid_mask).to(self.device)
-        self.prune_given_valid_mask(valid_mask)
-        pass
-    
-    def remove_floater(self):
-        uv = self.orthorgraphic_proj()
-        
-        # pixel_pos 
-        
-        
-        pass
-    
-    def orthorgraphic_proj(self):
-        pos = self.model.point_cloud.position.detach() # [N, 3]
-        uv = (pos[:, :2] + 1) * torch.tensor([[self.w], [self.h]], device=pos.device) / 2
-        return uv
     
     def init_prune(self):
         # only save points within the depth map
@@ -241,10 +194,6 @@ class ArtVidTrainer():
         pass
     
     def prune_given_valid_mask(self, valid_mask):
-        '''
-        valid_mask: torch.Tensor in shape [N]
-        '''
-        
         self.model.point_cloud.remove_points(valid_mask, self.controller.optimizer)
         self.controller.prune_postprocess(valid_mask)
         # pass
@@ -280,21 +229,19 @@ class ArtVidTrainer():
         # for att in pcd_attrs:
         #     cur_att = getattr(pcd, att['name'])
         #     cur_att.requires_grad_ = False
-        loss_key = ['flow']
-        render_features = ['flow']
+        render_features = ['rgb', 'flow']
         self.model.point_cloud.eval()
         # kms_one_hot = self.run_kmeans()
         self.construct_learnable_motion_param()
         self.construct_motion_optimizer()
         self.model.run_kmeans(self.cfg.pose_free.k_clusters)
         self.cur_motion_step = 0
-        cur_motion_param = self.motion_list[-1]
         self.call_hook('before_motion_update')
         for i in range(self.cfg.pose_free.motion_steps):
             
             self.motion_optimizer.zero_grad()
-            render_results = self.model(batch, render_features=render_features, motion_params=cur_motion_param)
-            self.loss_dict = self.model.get_motion_loss_dict(render_results, batch, self.motion_list, loss_key=loss_key)
+            render_results = self.model(batch, render_features=render_features, motion_params=self.motion_list[0])
+            self.loss_dict = self.model.get_motion_loss_dict(render_results, batch)
             loss = self.loss_dict['loss']
             loss.backward()
             self.motion_optimizer.step()
@@ -315,6 +262,8 @@ class ArtVidTrainer():
             from utils import draw_points
             import numpy as np
             # rgb1_overlay = draw_points(rgb1)
+            next_rgb = render_results['future_dict']['rgb'].detach().squeeze(0).permute(1, 2, 0).cpu()
+            self.save_img(next_rgb, self.debug_path / 'rgb2_pred.png')
             pred_coord = np.round(mask_pred_flow)
             rgb1_overlay = draw_points(rgb1, flow_pos[:, :2].astype(np.int16))
             rgb2_overlay_pred = draw_points(rgb2, pred_coord.astype(np.int16))
@@ -322,24 +271,12 @@ class ArtVidTrainer():
             plt.imsave(str(self.debug_path / 'rgb1_overlay.png'), rgb1_overlay)
             plt.imsave(str(self.debug_path / 'rgb2_overlay.png'), rgb2_overlay)
             plt.imsave(str(self.debug_path / 'rgb2_overlay_pred.png'), rgb2_overlay_pred)
-            pred_rgb = torch.clamp(render_results['next_rgb'].squeeze(0).permute(1, 2, 0).detach().cpu(), 0.0, 1.0).numpy()
-            pred_rgb[pred_rgb > 1] = 1
-            plt.imsave(str(self.debug_path / 'rgb2_motion_pred.png'), pred_rgb)
             pass
-            self.save_ckpt(self.debug_path / 'motion.ckpt')
         
-    def save_ckpt(self, ckpt_name):
-        model_sd = self.model.state_dict()
-        model_sd.update({"motion_list": self.motion_list})
-        torch.save(model_sd, str(ckpt_name))
-        
-    def load_ckpt(self, ckpt_name):
-        ckpt_dict = torch.load(ckpt_name)
-        self.motion_list = ckpt_dict.pop('motion_list')
-        self.model.load_state_dict(ckpt_dict)
-        
-        
-    def refine_geometry(self):
+    @staticmethod
+    def save_img(img, fname):
+        img_np = torch.clamp(img, 0.0, 1.0).numpy()
+        imageio.imwrite(str(fname), img_as_ubyte(img_np))
         pass
         
     def construct_motion_optimizer(self):
@@ -401,6 +338,15 @@ class ArtVidTrainer():
         self.controller = DensificationController(
             self.cfg.controller, self.optimizer, self.model, cameras_extent=cameras_extent)
         
+    def remove_floater_dbscan(self):
+        pos = self.model.point_cloud.position.detach().cpu().numpy()
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(pos)
+        labels = np.array(pcd.cluster_dbscan(eps=0.2, min_points=1000))
+        valid_mask = labels >= 0
+        valid_mask = torch.from_numpy(valid_mask).to(self.device)
+        self.prune_given_valid_mask(valid_mask)
+        pass
     
     def train_progress(self):
         pass

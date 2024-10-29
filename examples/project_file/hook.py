@@ -57,7 +57,7 @@ class ArtVidLogHook(LogHook):
         pass
     
     def after_geo_init(self, trainner) -> None:
-        # self.progress_bar.reset('geo_init', visible=False)
+        self.progress_bar.reset('geo_init', visible=False)
         pass
     
     def before_motion_update(self, trainner) -> None:

@@ -10,11 +10,7 @@ from dataclasses import dataclass, field
 from pointrix.model.loss import l1_loss, ssim, psnr, LPIPS
 from pointrix.utils.pose import ConcatRT, quat_to_rotmat, apply_quaternion
 
-from utils import parse_tapir_track_info, denormalize_coords, masked_l1_loss, depth_loss_dpt
-from sklearn.cluster import KMeans
-
-        # from utils import depth_loss_dpt
-
+from utils import parse_tapir_track_info, denormalize_coords, masked_l1_loss
 
 class SimpleCamera():
     def __init__(self, h, w):
@@ -36,7 +32,6 @@ class VidArtModel(BaseModel):
         renderer: dict = field(default_factory=dict)
         loss_coef: dict = field(default_factory=dict)
         lambda_ssim: float = 0.2
-        k_clusters: int = 128
     cfg: Config
     
     @dataclass
@@ -55,7 +50,6 @@ class VidArtModel(BaseModel):
         self.point_cloud.set_prefix_name("point_cloud")
         self.device = device
         self.lpips_func = LPIPS()
-        self.kmeans = KMeans(n_clusters=self.cfg.k_clusters, random_state=0, n_init='auto')
         
         
         pass
@@ -71,7 +65,7 @@ class VidArtModel(BaseModel):
     #     render_dict = self.construct_render_dict()
     #     pass
     
-    def forward(self, batch=None, render=True, iteration=None, render_features=None, motion_params=None) -> dict:
+    def forward(self, batch=None, trainint=True, render=True, iteration=None, init=False, render_features=None, motion_params=None) -> dict:
         """
         Forward pass of the model.
 
@@ -97,94 +91,26 @@ class VidArtModel(BaseModel):
             render_dict = self.construct_dynamic_render_dict(motion_params=motion_params)
         if render_features is not None:
             render_dict.update({'render_features': render_features})
-            
         if render:
-            if motion_params is None:
+            render_results = self.renderer.render_batch(render_dict, [batch])
+            if motion_params is not None:
                 
-                render_results = self.renderer.render_batch(render_dict, [batch])
-            else:
-                render_results = self.render_dynamic(render_dict, batch)
-        
+                # future_render_dict = render_dict
+                future_pos = render_dict['future_pos']
+                furture_rot = render_dict['future_rot']
+                future_render_dict = {
+                    'position': future_pos,
+                    'rotation': furture_rot
+                }
+                for k, v in render_dict.items():
+                    if k not in future_render_dict.keys():
+                        future_render_dict[k] = v
+                    
+                future_render_result = self.renderer.render_batch(future_render_dict, [batch])
+                render_results.update({'future_dict': future_render_result})
             return render_results
         else:
             return render_dict
-    
-    # def render_dynamic_vis(self, render_dict):
-    #     cur_results = {}
-        
-    #     cur_render_keys = ['rgb', 'opacity', 'depth', 'flow']
-    #     render_dict['render_features'] = cur_render_keys
-    #     prev_render_results = self.renderer.render_iter(render_dict)
-    #     for i in cur_render_keys:
-    #         cur_results[i] = prev_render_results[i]
-    #     # render next frame to obtain rgb and opacity
-    #     next_render_dict = {}
-    #     for k, v in render_dict.items():
-    #         next_render_dict[k] = v
-    #     next_render_dict.pop('position')
-    #     next_render_dict.pop('rotation')
-    #     next_render_dict['position'] = next_render_dict['future_pos']
-    #     next_render_dict['rotation'] = next_render_dict['future_rot']
-    #     next_render_features = ['rgb', 'opacity', 'depth']
-    #     next_render_dict['render_features'] = next_render_features
-    #     next_render_results = self.renderer.render_iter(next_render_dict)
-        
-    #     return_dict = {
-    #         'flow': prev_render_results['flow']
-    #     }
-    #     for k in next_render_features:
-    #         return_dict.update({k:next_render_results[k]})
-        
-    #     return return_dict
-    #     pass
-    
-    def render_dynamic(self, render_dict, batch):
-        '''
-        render_dict = {
-            "position": self.point_cloud.position,
-            "opacity": self.point_cloud.get_opacity,
-            "scaling": self.point_cloud.get_scaling,
-            "rotation": self.point_cloud.get_rotation,
-            "shs": self.point_cloud.get_shs,
-            # camera params
-            "extrinsic_matrix": extrinsic_matrix.to(self.device),
-            "intrinsic_params": intrinsic_params.unsqueeze(0).to(self.device),
-            "camera_center": camera_center.unsqueeze(0).to(self.device),
-            "height": self.h,
-            "width": self.w,
-            # "previous_pos": self.point_cloud.position,
-            "future_pos": pos,
-            "future_rot": rot
-        }
-        '''
-        # render previous frame to obtain fw flow
-        
-        cur_results = {}
-        
-        cur_render_keys = ['rgb', 'opacity', 'depth', 'flow']
-        render_dict['render_features'] = cur_render_keys
-        prev_render_results = self.renderer.render_batch(render_dict, [batch])
-        for i in cur_render_keys:
-            cur_results[f'cur_{i}'] = prev_render_results[i]
-        # render next frame to obtain rgb and opacity
-        next_render_dict = {}
-        for k, v in render_dict.items():
-            next_render_dict[k] = v
-        next_render_dict.pop('position')
-        next_render_dict.pop('rotation')
-        next_render_dict['position'] = next_render_dict['future_pos']
-        next_render_dict['rotation'] = next_render_dict['future_rot']
-        next_render_features = ['rgb', 'opacity', 'depth']
-        next_render_dict['render_features'] = next_render_features
-        next_render_results = self.renderer.render_batch(next_render_dict, [batch])
-        
-        return_dict = {
-            'flow': prev_render_results['flow']
-        }
-        for k in next_render_features:
-            return_dict.update({f'next_{k}':next_render_results[k]})
-        
-        return return_dict
     
     def get_loss_dict(self, render_results, batch) -> dict:
         
@@ -207,7 +133,7 @@ class VidArtModel(BaseModel):
             pos_loss = self.get_pos_loss(render_results, batch)
             loss += pos_loss
         else:
-            pos_loss = torch.Tensor([0]).to(loss).squeeze()
+            pos_loss = torch.Tensor([0]).to(loss)
         # position_loss = pass
         
         
@@ -215,7 +141,7 @@ class VidArtModel(BaseModel):
             rgb_loss = self.get_rgb_loss(render_results, batch)
             loss += rgb_loss
         else:
-            rgb_loss = torch.Tensor([0]).to(loss).squeeze()
+            rgb_loss = torch.Tensor([0]).to(loss)
         return {
             'loss': loss,
             'depth_loss': depth_loss,
@@ -276,50 +202,52 @@ class VidArtModel(BaseModel):
         ) / max(self.h, self.w)
         return flow_loss
     
-    def get_smooth_reg(self, motion_params):
-        prev_param = motion_params[-2]
-        cur_param = motion_params[-1]
-        
-        prev_rot = quat_to_rotmat(prev_param['quaternion'])
-        prev_trans = prev_param['translation']
-        
-        cur_rot = quat_to_rotmat(cur_param['quaternion'])
-        cur_trans = cur_param['translation']
-        
-        rot_diff = prev_rot.permute(0, 2, 1) @ cur_rot - torch.eye(3).to(cur_rot)
-        rot_smooth = torch.norm(rot_diff)
-        
-        trans_diff = prev_rot.permute(0, 2, 1) @ (cur_trans - prev_trans).unsqueeze(-1)
-        trans_smooth = torch.norm(trans_diff, p=1)
-        motion_smooth = rot_smooth + trans_smooth
-        return motion_smooth
+    def get_motion_reg(self, render_results, batch):
+        pass
     
     def get_rigid_reg(self, render_results, batch):
         pass
     
-    def get_motion_loss_dict(self, render_results, batch, motion_params, loss_key=['flow', 'rgb']) -> dict:
+    def get_motion_loss_dict(self, render_results, batch) -> dict:
+        # flow_pos = torch.from_numpy(batch['flow_pos2']).to(self.device) #[N, 4], with 4 as [u, v, occlusions, confidence]
+        # bw_flow = torch.from_numpy(batch['bw_flow']).to(self.device)
+        # valid_visible, _, confidence = parse_tapir_track_info(bw_flow[..., 2], bw_flow[..., 3])
+        # valid_visible = valid_visible.view(-1)
+        # confidence = confidence.view(-1)
+        
+        # render_flow = render_results['flow'].permute(0, 2, 3, 1) # [1, h, w, 3]
+        # pred_bw_flow = denormalize_coords(render_flow[..., :2], self.h, self.w)
+        
+        # pixel_mask = torch.zeros_like(pred_bw_flow[..., 0])
+        
+        # query_pixel = flow_pos[:, :2].to(torch.int64)
+        # pixel_mask[0, query_pixel[:, 1], query_pixel[:, 0]] = 1
+        # pixel_mask_flatten = (pixel_mask.reshape(-1, self.h * self.w) > 0.5)
+        # # pred_bw_flow = pred_bw_flow.view(-1, self.w * self.h, 2)
+        # # mask_pred_flow = pred_bw_flow[pixel_mask_flatten][valid_visible]
+        
+        # mask_pred_flow = self.collect_valid_pos(render_flow, pixel_mask_flatten, valid_visible)
+        # mask_gt_flow = bw_flow[valid_visible][..., :2]
+        # # from matplotlib import pyplot as plt
+        # # plt.imsave('debug_mask.png', pixel_mask.detach().cpu().squeeze(0).numpy())
+        # # plt.imsave('flow_0.png', pred_bw_flow[0,:, :, 0].detach().cpu().numpy())
+        
+        # flow_loss = masked_l1_loss(
+        #     mask_pred_flow,
+        #     mask_gt_flow,
+        #     mask = confidence[valid_visible],
+        #     quantile=0.98
+        # ) / max(self.h, self.w)
         
         # return flow_loss
         flow_loss = self.get_fw_flow_loss(render_results, batch)
-        # loss = flow_loss + 0
         
+        loss = flow_loss
         loss_dict = {
-            'flow_loss': flow_loss
+            'flow_loss': flow_loss,
+            'loss': loss
         }
         
-        
-        if 'rgb' in loss_key:
-            rgb_loss = self.get_rgb_loss(render_results, batch, gt_key='rgb2', pred_key='next_rgb')
-            # loss += rgb_loss
-            loss_dict.update({'rgb_loss': rgb_loss})
-        
-        if 'smooth' in loss_key:
-            smooth_loss = self.get_smooth_reg(motion_params)
-            loss_dict.update({'smooth_loss': smooth_loss})
-        
-        loss = sum([v for _, v in loss_dict.items()])
-        
-        loss_dict.update({'loss': loss})
         return loss_dict
     
     def collect_valid_pos(self, pred, pixel_mask, valid_mask):
@@ -335,40 +263,22 @@ class VidArtModel(BaseModel):
         
         pred_masked = pred_depth.view(-1, 1)[mask > 0]
         gt_masked = gt_depth.view(-1, 1)[mask > 0]
+        from utils import depth_loss_dpt
         # depth_loss = F.l1_loss(pred_masked, gt_masked)
         depth_loss = depth_loss_dpt(pred_masked, gt_masked)
         
         # depth_empty_loss = F.mse_loss(pred_depth.view(-1, 1)[mask==0], gt_depth.view(-1, 1)[mask==0])
         return depth_loss
     
-    def get_depth_loss_v2(self, pred_depth, gt_depth, mask=None):
-        
-        if mask is not None:
-            pred_masked = pred_depth.view(-1, 1)[mask > 0]
-            gt_masked = gt_depth.view(-1, 1)[mask > 0]
-        else:
-            pred_masked = pred_depth.view(-1, 1)
-            gt_masked = gt_depth.view(-1, 1)
-            
-        depth_loss = depth_loss_dpt(pred_masked, gt_masked)
-        
-        return depth_loss
-    
     def get_flow_loss(self, render_results, batch):
         pass
     
-    def get_rgb_loss(self, render_results, batch, gt_key='rgb1', pred_key='rgb'):
-        pred_rgb = render_results[pred_key].squeeze(0).permute(1, 2, 0)
-        gt_rgb = torch.from_numpy(batch[gt_key]).to(pred_rgb)
+    def get_rgb_loss(self, render_results, batch):
+        pred_rgb = render_results['rgb'].squeeze(0).permute(1, 2, 0)
+        gt_rgb = torch.from_numpy(batch['rgb1']).to(pred_rgb)
         rgb_loss = F.l1_loss(pred_rgb, gt_rgb)
         
         ssim_loss = ssim(pred_rgb, gt_rgb)
-        final_loss = self.cfg.lambda_ssim * ssim_loss + (1 - self.cfg.lambda_ssim) * rgb_loss
-        return final_loss
-    
-    def get_rgb_loss_v2(self, gt, pred):
-        rgb_loss = F.l1_loss(pred, gt)
-        ssim_loss = ssim(pred, gt)
         final_loss = self.cfg.lambda_ssim * ssim_loss + (1 - self.cfg.lambda_ssim) * rgb_loss
         return final_loss
     
@@ -422,27 +332,14 @@ class VidArtModel(BaseModel):
         return render_dict
     
     def run_kmeans(self, k_clusters):
-        # from torch_kmeans import KMeans
-        # from kmeans_pytorch import kmeans
-        # model = KMeans(n_clusters=k_clusters)
-        pts = self.point_cloud.position # [N, 3]
-        pts_np = pts.detach().cpu().numpy()
-        self.kmeans.fit(pts_np)
-        label = torch.from_numpy(self.kmeans.labels_).to(pts)
-        # label = model(pts)
-        
-        # label, centroid = kmeans(X=pts, num_clusters=k_clusters, distance='euclidean', device=self.device)
-        
-        label_one_hot = torch.nn.functional.one_hot(label.view(-1).long(), num_classes=k_clusters).to(self.point_cloud.position)
-        # # return label_one_hot
+        from torch_kmeans import KMeans
+        model = KMeans(n_clusters=k_clusters)
+        pts = self.point_cloud.position.unsqueeze(0)
+        label = model(pts)
+        label_one_hot = torch.nn.functional.one_hot(label.labels.view(-1), num_classes=k_clusters).to(self.point_cloud.position)
+        # return label_one_hot
         self.point_cloud.register_attribute("kmeans_label", label_one_hot, trainable=False)
-        # self.centroid = centroid
         return
-    
-    def retrive_centroid(self):
-        pos = self.point_cloud.position # [N, 3]
-        label = self.point_cloud.kmeans_label # [N, k]
-        pass
     
     def compute_dynamic_position(self, motion_params):
         static_pos = self.point_cloud.position

@@ -7,8 +7,8 @@ trainer:
   training: True
   pose_free:
     debug: True
-    geo_steps: 3000
-    motion_steps: 2000
+    geo_steps: 2000
+    motion_steps: 3000
     init_q_lr: 1e-2
     end_q_lr: 1e-5
     init_t_lr: 1e-2
@@ -19,7 +19,6 @@ trainer:
   model:
     name: VidArtModel
     lambda_ssim: 0.2
-    k_clusters: ${trainer.pose_free.k_clusters}
     point_cloud:
       point_cloud_type: "GaussianPointCloud"  
       max_sh_degree: 3
@@ -42,7 +41,7 @@ trainer:
 
   controller:
     normalize_grad: False
-    # densify_grad_threshold: 1e-3
+    densify_grad_threshold: 0.1
     # min_opacity: 0.1
     # duplicate_interval: 200
     # prune_interval: 200

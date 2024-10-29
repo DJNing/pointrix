@@ -229,6 +229,11 @@ class DensificationController(BaseDensificationController):
         valid_points_mask = ~prune_filter
         self.point_cloud.remove_points(valid_points_mask, self.optimizer)
         self.prune_postprocess(valid_points_mask)
+        
+    def manual_prune(self, valid_points_mask):
+        self.point_cloud.remove_points(valid_points_mask, self.optimizer)
+        self.prune_postprocess(valid_points_mask)
+        pass
 
     def prune_postprocess(self, valid_points_mask):
         """

@@ -149,13 +149,9 @@ class PoseFreeGSDataset(Dataset):
         self.img_dir = self.seq_dir / self.seq_name / 'images'
         self.mask_dir = self.seq_dir / self.seq_name / 'masks'
         self.depth_dir = self.seq_dir / self.seq_name / 'aligned_depth_anything_v2'
-        # self.depth_dir = self.seq_dir / self.seq_name / 'depth_gt'
         self.flow_dir = self.seq_dir / self.seq_name / 'bootstapir'
         
-        if 'gt' in str(self.depth_dir):
-            self.detph_files = sorted([str(f) for f in self.depth_dir.glob('*.png')])
-        else:
-            self.detph_files = sorted([str(f) for f in self.depth_dir.glob('*.npy')])
+        self.detph_files = sorted([str(f) for f in self.depth_dir.glob('*.npy')])
         
         # self.flow_dir = os.path.join(self.seq_dir, 'raft_exhaustive')
         img_names = sorted([f.name for f in self.img_dir.glob("*.png")])
@@ -195,17 +191,9 @@ class PoseFreeGSDataset(Dataset):
         mask_2 = imageio.imread(str(self.mask_dir / self.img_names[id2])) / 255.
         
         # load depth
-        try:
-            depth_1 = np.load(self.detph_files[id1])
-            depth_2 = np.load(self.detph_files[id2])
-        except:
-            depth_1 = imageio.imread(self.detph_files[id1])
-            depth_1 = depth_1 / depth_1.max()
-            
-            depth_2 = imageio.imread(self.detph_files[id2])
-            depth_2 = depth_2 / depth_2.max()
-            
-            
+        depth_1 = np.load(self.detph_files[id1])
+        depth_2 = np.load(self.detph_files[id2])
+        
         # load opt flow
         pos1_fname = f'{id1:04d}_{id1:04d}.npy'
         pos2_fname = f'{id2:04d}_{id2:04d}.npy'
