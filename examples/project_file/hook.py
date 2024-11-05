@@ -8,7 +8,8 @@ from pointrix.logger.writer import ProgressLogger
 
 @HOOK_REGISTRY.register()
 class ArtVidLogHook(LogHook):
-    def before_init_train(self, trainner) -> None:
+    
+    def init_progress_bar(self, trainner) -> None:
         """
         some operations before the training loop starts.
 
@@ -21,11 +22,42 @@ class ArtVidLogHook(LogHook):
         self.progress_bar = ProgressLogger(description='training', suffix='iter/s')
         self.progress_bar.add_task("geo_init", "Training Progress for geometry initialization", trainner.cfg.pose_free.geo_steps, log_dict={})
         self.progress_bar.add_task("motion_update", "Training Progress for motion estimation", trainner.cfg.pose_free.motion_steps, log_dict={})
+        self.progress_bar.add_task("Global progression", "Accumulate points by frames", len(trainner.dataset.img_names), log_dict={})
+        self.progress_bar.add_task("Local progression", "estimate motion between two frames", trainner.cfg.local_progression_steps, log_dict={})
         # self.progress_bar.add_task("train", "Training Progress", trainner.cfg.max_steps, log_dict={})
         # self.progress_bar.add_task("validation", "Validation Progress", len(trainner.datapipeline.validation_dataset), log_dict={})
         # self.progress_bar.reset("validation", visible=False)
+        
+        self.progress_bar.reset('geo_init', visible=False)
         self.progress_bar.reset('motion_update', visible=False)
+        self.progress_bar.reset("Global progression", visible=False)
+        self.progress_bar.reset("Local progression", visible=False)
         self.progress_bar.start()
+    
+    
+    def before_init_train(self, trainner) -> None:
+        """
+        some operations before the training loop starts.
+
+        Parameters
+        ----------
+        trainner : Trainer
+            The trainer object.
+        """
+        # self.init_step = 0
+        # self.progress_bar = ProgressLogger(description='training', suffix='iter/s')
+        # self.progress_bar.add_task("geo_init", "Training Progress for geometry initialization", trainner.cfg.pose_free.geo_steps, log_dict={})
+        # self.progress_bar.add_task("motion_update", "Training Progress for motion estimation", trainner.cfg.pose_free.motion_steps, log_dict={})
+        # self.progress_bar.add_task("Global progression", "Accumulate points by frames", len(trainner.dataset.img_names), log_dict={})
+        # self.progress_bar.add_task("Local progression", "estimate motion between two frames", trainner.cfg.pose_free.local_progression_steps, log_dict={})
+        # # self.progress_bar.add_task("train", "Training Progress", trainner.cfg.max_steps, log_dict={})
+        # # self.progress_bar.add_task("validation", "Validation Progress", len(trainner.datapipeline.validation_dataset), log_dict={})
+        # # self.progress_bar.reset("validation", visible=False)
+        # self.progress_bar.reset('motion_update', visible=False)
+        # self.progress_bar.reset("Global progression", visible=False)
+        # self.progress_bar.reset("Local progression", visible=False)
+        # self.progress_bar.start()
+        self.progress_bar.reset('geo_init', visible=True)
     
     def after_init_train_iter(self, trainner) -> None:
         for param_group in trainner.optimizer.param_groups:
@@ -92,6 +124,54 @@ class ArtVidLogHook(LogHook):
                 "num_pts": f"{len(trainner.model.point_cloud)}",
             })
             self.progress_bar.update("motion_update", step=trainner.cfg.bar_upd_interval, log=self.bar_info)
+        pass
+    
+    def before_global_progression(self, trainner) -> None:
+        self.progress_bar.reset('Global progression', visible=True)
+        
+        pass
+    
+    # def before_global_progression(self, trainner) -> None:
+    #     self.progress_bar.reset('Global Progression', visible=True)
+        
+    #     pass
+    
+    def before_local_progression(self, trainner) -> None:
+        self.progress_bar.reset('Local progression', visible=True)
+        pass
+    
+    def after_local_progression(self, trainner) -> None:
+        self.progress_bar.reset('Local progression', visible=False)
+        pass
+    
+    def after_global_progression_iter(self, trainner) -> None:
+        log_dict = {
+            'num_pts': len(trainner.init_pcd)
+        }
+        # cur_bar_info = {
+        # }
+        self.progress_bar.update('Global progression', step=1, log=log_dict)
+        
+    
+    def after_local_progression_iter(self, trainner) -> None:
+        
+        log_dict = {}
+        log_dict.update(trainner.local_dict)
+
+        for key, value in log_dict.items():
+            if 'loss' in key:
+                # self.ema_loss_for_log = 0.4 * value.item() + 0.6 * self.ema_loss_for_log
+                self.bar_info.update(
+                    {key: f"{value:.{7}f}"})
+
+            # if trainner.writer and key != "optimizer_params":
+            #     trainner.writer.write_scalar(key, value, trainner.global_step)
+
+        if trainner.local_step % trainner.cfg.bar_upd_interval == 0:
+            self.bar_info.update({
+                "num_pts": f"{len(trainner.model.point_cloud)}",
+            })
+            self.progress_bar.update("Local progression", step=trainner.cfg.bar_upd_interval, log=self.bar_info)
         pass
     
     # def after_val_iter(self, trainner) -> None:

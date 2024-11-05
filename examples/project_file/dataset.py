@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 import multiprocessing as mp
 from utils import normalize_coords, gen_grid_np
 from pathlib import Path as P
+from PIL import Image
 
 def get_sample_weights(flow_stats):
     sample_weights = {}
@@ -148,10 +149,14 @@ class PoseFreeGSDataset(Dataset):
         # self.img_dir = "/mnt/sda/syt/dataset/laptop_10211/processed/images"
         self.img_dir = self.seq_dir / self.seq_name / 'images'
         self.mask_dir = self.seq_dir / self.seq_name / 'masks'
-        self.depth_dir = self.seq_dir / self.seq_name / 'aligned_depth_anything_v2'
+        # self.depth_dir = self.seq_dir / self.seq_name / 'aligned_depth_anything_v2'
+        self.depth_dir = self.seq_dir / self.seq_name / 'depth_gt'
         self.flow_dir = self.seq_dir / self.seq_name / 'bootstapir'
         
-        self.detph_files = sorted([str(f) for f in self.depth_dir.glob('*.npy')])
+        if 'gt' in str(self.depth_dir):
+            self.detph_files = sorted([str(f) for f in self.depth_dir.glob('*.png')])
+        else:
+            self.detph_files = sorted([str(f) for f in self.depth_dir.glob('*.npy')])
         
         # self.flow_dir = os.path.join(self.seq_dir, 'raft_exhaustive')
         img_names = sorted([f.name for f in self.img_dir.glob("*.png")])
@@ -176,6 +181,10 @@ class PoseFreeGSDataset(Dataset):
         
     #     pass
         
+    def __len__(self):
+        return self.num_imgs
+        # pass
+        
     def __getitem__(self, index):
         id1 = index % self.num_imgs
         
@@ -191,8 +200,15 @@ class PoseFreeGSDataset(Dataset):
         mask_2 = imageio.imread(str(self.mask_dir / self.img_names[id2])) / 255.
         
         # load depth
-        depth_1 = np.load(self.detph_files[id1])
-        depth_2 = np.load(self.detph_files[id2])
+        try:
+            depth_1 = np.load(self.detph_files[id1])
+            depth_2 = np.load(self.detph_files[id2])
+        except:
+            depth_1 = np.asarray(Image.open(self.detph_files[id1])) / 4000
+            # depth_1 = depth_1 / depth_1.max()
+            
+            depth_2 = np.asarray(Image.open(self.detph_files[id2])) / 1000
+            # depth_2 = depth_2 / depth_2.max()
         
         # load opt flow
         pos1_fname = f'{id1:04d}_{id1:04d}.npy'
@@ -204,6 +220,7 @@ class PoseFreeGSDataset(Dataset):
         bw_flow = np.load(str(self.flow_dir / bw_flow_name))
         pos1 = np.load(str(self.flow_dir/pos1_fname))
         pos2 = np.load(str(self.flow_dir/pos2_fname))
+        
         
         data = {
             'id1': id1,
@@ -220,6 +237,17 @@ class PoseFreeGSDataset(Dataset):
             'flow_pos2': pos2
         }
         
+        pts = self.get_init_pcd_from_batch(data['depth1'], data['flow_pos1'])
+        data.update({'cur_pts': pts})
+        next_pts = self.get_init_pcd_from_batch(data['depth2'], data['flow_pos2'])
+        data.update({'next_pts': next_pts})
+        for i, v in data.items():
+            if type(v) != torch.Tensor:
+                try:
+                    data[i] = torch.from_numpy(v)
+                except:
+                    pass
+                
         # return_dict = {}
         # for k, v in data.items():
         #     try:
@@ -230,10 +258,21 @@ class PoseFreeGSDataset(Dataset):
         return data
 
     def get_init_pcd(self):
-        batch_data = self.__getitem__(0)
-        depth = batch_data['depth1']
+        batch = self.__getitem__(0)
+        return batch['cur_pts']
+        # if idx is None:
+        #     batch_data = self.__getitem__(0)
+        # else:
+        #     batch_data = self.__getitem__(idx)
+        # pts = self.get_init_pcd_from_batch(batch_data=batch_data)
+        # return pts
+        # # pass
+        
+    def get_init_pcd_from_batch(self, depth, pos):
+        
+        # depth = batch_data['depth1']
         # mask = batch_data['mask1']
-        pos = batch_data['flow_pos1'][:, :2].astype(np.int16)
+        pos = pos[:, :2].astype(np.int16)
         pts_depth = depth[pos[:,0], pos[:,1]].reshape(-1, 1)
         
         # normalize pos
@@ -242,4 +281,5 @@ class PoseFreeGSDataset(Dataset):
         
         pts = np.concatenate([pos_norm, pts_depth], axis=-1)
         return pts
-        # pass
+        
+    

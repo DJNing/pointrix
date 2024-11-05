@@ -325,7 +325,10 @@ class ArtVidTrainer():
             pred_rgb = torch.clamp(render_results['next_rgb'].squeeze(0).permute(1, 2, 0).detach().cpu(), 0.0, 1.0).numpy()
             pred_rgb[pred_rgb > 1] = 1
             plt.imsave(str(self.debug_path / 'rgb2_motion_pred.png'), pred_rgb)
-            pass
+            dynamic_pos = self.model.compute_dynamic_position(self.motion_list[-1]).view(-1, 3).detach().cpu().numpy()
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(dynamic_pos)
+            o3d.io.write_point_cloud(pcd, f'{self.debug_path / 'dynamic_pos.ply'}')
             self.save_ckpt(self.debug_path / 'motion.ckpt')
         
     def save_ckpt(self, ckpt_name):
@@ -401,10 +404,6 @@ class ArtVidTrainer():
         self.controller = DensificationController(
             self.cfg.controller, self.optimizer, self.model, cameras_extent=cameras_extent)
         
-    
-    def train_progress(self):
-        pass
-    
     def train_global_opt(self):
         pass
     
@@ -437,3 +436,4 @@ class ArtVidTrainer():
                     getattr(hook, fn_name)(self, **kwargs)
                 except TypeError as e:
                     raise TypeError(f'{e} in {hook}') from None
+                

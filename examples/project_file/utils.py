@@ -15,7 +15,7 @@ from matplotlib.figure import Figure
 import matplotlib as mpl
 import subprocess
 import open3d as o3d
-
+from pointrix.utils.pose import ConcatRT, quat_to_rotmat, apply_quaternion
 
 TINY_NUMBER = 1e-6      # float32 only has 7 decimal digits precision
 
@@ -572,6 +572,22 @@ def depth_loss_dpt(pred_depth, gt_depth, weight=None, mask=None):
         loss = F.mse_loss(pred_depth_n, gt_depth_n)
     return loss
 
+def collect_valid_tapir(query, target):
+    '''
+    input:
+        query: [N, 4]
+        target: [N, 4]
+    return:
+        valid query
+        valid target
+        confidence
+    '''
+    valid_visible, _, confidence = parse_tapir_track_info(target[..., 2], target[..., 3])
+    valid_query = query[valid_visible, :]
+    valid_traget = target[valid_visible, :]
+    
+    return valid_query, valid_traget, confidence
+
 def parse_tapir_track_info(occlusions, expected_dist):
     """
     return:
@@ -670,3 +686,78 @@ def draw_points(image, coordinates, color=(0, 1, 0), point_size=3):
         # print(x,y)
     
     return image_with_points
+
+def retrive_points_given_uv(self):
+    pass
+
+def compute_dynamic_position(static_pos, motion_params):
+    dy_q = motion_params['quaternion']
+    dy_T = motion_params['translation'].unsqueeze(1)
+    pts_num = static_pos.shape[0]
+    homo_pos = torch.concat(
+        (static_pos, torch.ones([pts_num, 1], device=static_pos.device)),
+                            dim=1)
+    
+    # construct transformation matrix
+    dy_rot = quat_to_rotmat(dy_q)
+    trans = torch.concat([dy_rot, dy_T], dim=1)
+    
+    trans_homo = torch.zeros([dy_rot.shape[0], 4, 4]).to(dy_rot)
+    trans_homo[:, :, :3] = trans
+    trans_homo[:, -1, -1] = 1
+    
+    # collect the correct transformation based on kmeans clustering
+    # label = self.point_cloud.kmeans_label
+    # full_trans = torch.mm(label, trans_homo.view(-1, 16)).view(-1, 4, 4)
+    
+    # get position after transformation
+    dy_pos = torch.bmm(trans_homo, homo_pos.unsqueeze(-1)).squeeze(-1)
+    # torch.einsum('ijk,kv->')
+    final_pos = dy_pos[:, :3] / dy_pos[:, 3:]
+    
+    return final_pos
+
+def compute_dynamic_rotation(cur_q, motion_params):
+    dy_q = motion_params['quaternion']
+    # label = self.point_cloud.kmeans_label
+    # cur_q = self.point_cloud.get_rotation
+    # full_dy_q = torch.mm(label, dy_q)
+    new_q = apply_quaternion(cur_q, dy_q)
+    return new_q
+
+# def depth_scale_invariant_loss(pts_a, pts_b):
+    
+#     pass
+
+# def scale_invariant_loss(a, b):
+#     '''
+#     1/n * sum((ln(a) - ln(b))^2) - 1/(n^2) (sum(ln(a) - ln(b))^2)
+    
+#     '''
+#     na = a.shape[0]
+#     nb = b.shape[0]
+#     if na != nb:
+#         raise ValueError('len(a) != len(b)!')
+    
+#     eps = 1e-5
+#     a_safe = torch.clamp(a, eps, torch.inf)
+#     b_safe = torch.clamp(b, eps, torch.inf)
+    
+#     lnab = torch.log(a_safe) - torch.log(b_safe)
+    
+#     first_term = 1 / na * torch.sum(torch.square(lnab)) 
+#     second_term = 1 / (na**2) * torch.square(torch.sum(lnab))
+    
+#     loss = first_term + second_term
+#     return loss
+
+
+
+# Example usage
+# H, W = 480, 640
+# depth_map = torch.rand(H, W) * 5  # Example depth map with random values
+# u = torch.tensor([100.5, 200.3])  # Example sub-pixel x-coordinates
+# v = torch.tensor([100.5, 300.6])  # Example sub-pixel y-coordinates
+
+# depth_values = get_interpolate_depth(depth_map, u, v)
+# print(depth_values)

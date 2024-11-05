@@ -17,6 +17,12 @@ import imageio
 import numpy as np
 from skimage import img_as_ubyte
 import open3d as o3d
+from utils import compute_dynamic_position, parse_tapir_track_info
+
+from arap_utils import cal_connectivity_from_points, cal_arap_error, cal_arap_reg
+import progression_utils as p_utils
+import torchvision.transforms.functional as tvF
+from pytorch3d.loss import chamfer_distance
 
 class pseudo_datapipeline:
     point_cloud: None
@@ -72,11 +78,16 @@ class ArtVidTrainer():
         # pose free training:
         pose_free: dict = field(default_factory=dict)
         
+        local_progression_steps: int = 1000
+    
+        
+        
+        
 
     cfg: Config
 
     
-    def __init__(self, cfg: Config, exp_dir: P, name: str, h, w, init_pcd=None) -> None:
+    def __init__(self, cfg: Config, exp_dir: P, name: str, h, w, dataset, init_pcd=None) -> None:
         # super().__init__()
         self.exp_dir = exp_dir
         self.start_steps = 1
@@ -92,6 +103,7 @@ class ArtVidTrainer():
         # self.hooks = parse_hooks(self.cfg.hooks)
         # prepare model
         # @dataclass
+        self.dataset = dataset
         
             
         pipeline = pseudo_datapipeline()
@@ -112,7 +124,12 @@ class ArtVidTrainer():
          
         # motion optimization
         self.motion_list = []
+        self.construct_learnable_motion_param(requires_grad=False)
+        self.init_pcd = None
+        self.call_hook('init_progress_bar')
         
+        # progression
+        self.k = torch.Tensor(np.array([[1098.990966796875, 0.0, 400.0], [0.0, 1098.990966796875, 400.0], [0.0, 0.0, 1.0]])).float().to(self.device)
         
     def setup(self):
         pass
@@ -207,17 +224,58 @@ class ArtVidTrainer():
         import open3d as o3d
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(pts)
-        o3d.io.write_point_cloud(fname, pcd)
+        o3d.io.write_point_cloud(str(fname), pcd)
         
-    def construct_learnable_motion_param(self):
-        init_qua = torch.zeros([self.cfg.pose_free.k_clusters, 4], device=self.device)
+        
+    def construct_learnable_motion_param(self, requires_grad=True, k_clusters=None):
+        if k_clusters is None:
+            k_clusters = self.cfg.pose_free.k_clusters
+        init_qua = torch.zeros([k_clusters, 4], device=self.device)
         init_qua[:, 0] = 1
-        init_trans = torch.zeros([self.cfg.pose_free.k_clusters, 3], device=self.device)
+        init_trans = torch.zeros([k_clusters, 3], device=self.device)
         param_dict = {
-            'quaternion': torch.nn.Parameter(init_qua, requires_grad=True),
-            'translation': torch.nn.Parameter(init_trans, requires_grad=True)
+            'quaternion': torch.nn.Parameter(init_qua, requires_grad=requires_grad),
+            'translation': torch.nn.Parameter(init_trans, requires_grad=requires_grad)
         }
         self.motion_list += [param_dict]
+        pass
+    
+    
+    def simple_progression_update(self, batch):
+        
+        '''
+        estimate point motion and merge the point cloud from depth estimation only
+        
+        (uv, depth) = self.model.renderer.project_point(
+                position, 
+                extrinsic_matrix.cuda(), 
+                width, 
+                height,
+                nearest=0.01)
+        '''
+        position = self.model.point_cloud.position
+        self.construct_learnable_motion_param()
+        self.construct_motion_optimizer()
+        cur_motion_param = self.motion_list[-1]
+        position = self.model.compute_dynamic_position(cur_motion_param)
+        # extrinsic = torch.eye(4).to(position)
+        # (uv, depth) = self.model.renderer.project_point(
+        #     position,
+        #     extrinsic,
+        #     self.w,
+        #     self.h,
+        #     nearest=0.01
+        # )
+        
+        # 
+        # render_features = ['rgb', 'depth', 'opacity', 'pose']
+        # render_results = self.model(batch, render_features=render_features)
+        
+        # opacity = render_results['opacity']
+        # pose = render_results['pose']
+        pass
+    
+    def retrieve_points_given_uv(self):
         pass
     
     def update_motion(self, batch):
@@ -240,7 +298,7 @@ class ArtVidTrainer():
         for i in range(self.cfg.pose_free.motion_steps):
             
             self.motion_optimizer.zero_grad()
-            render_results = self.model(batch, render_features=render_features, motion_params=self.motion_list[0])
+            render_results = self.model(batch, render_features=render_features, motion_params=self.motion_list[-1])
             self.loss_dict = self.model.get_motion_loss_dict(render_results, batch)
             loss = self.loss_dict['loss']
             loss.backward()
@@ -271,6 +329,10 @@ class ArtVidTrainer():
             plt.imsave(str(self.debug_path / 'rgb1_overlay.png'), rgb1_overlay)
             plt.imsave(str(self.debug_path / 'rgb2_overlay.png'), rgb2_overlay)
             plt.imsave(str(self.debug_path / 'rgb2_overlay_pred.png'), rgb2_overlay_pred)
+            dynamic_pos = self.model.compute_dynamic_position(self.motion_list[-1]).view(-1, 3).detach().cpu().numpy()
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(dynamic_pos)
+            o3d.io.write_point_cloud(str(self.debug_path / 'dynamic_pos.ply'), pcd)
             pass
         
     @staticmethod
@@ -348,8 +410,8 @@ class ArtVidTrainer():
         self.prune_given_valid_mask(valid_mask)
         pass
     
-    def train_progress(self):
-        pass
+    # def train_progress(self):
+    #     pass
     
     def train_global_opt(self):
         pass
@@ -383,3 +445,379 @@ class ArtVidTrainer():
                     getattr(hook, fn_name)(self, **kwargs)
                 except TypeError as e:
                     raise TypeError(f'{e} in {hook}') from None
+                
+    def train_progress(self, batch):
+        self.init_pcd = None
+        self.global_step = 0
+        self.local_step = 0
+        self.call_hook('before_global_progression')
+        for i in range(len(self.dataset.img_names)):
+            batch = self.dataset.__getitem__(i)
+            if self.init_pcd is None:
+                self.init_pcd = torch.from_numpy(batch['cur_pts']).to(self.device).float()
+                pass
+            self.global_progression_iter(batch)
+            
+            if self.global_step % 10 == 0:
+                if self.cfg.pose_free.debug:
+                    pcd_name = self.debug_path / f'progression_{i:04d}.ply'
+                    self.position_to_ply(pcd_name, self.init_pcd)
+                    
+            
+            self.global_step += 1
+            self.call_hook('after_global_progression_iter')
+            
+        self.call_hook()
+        pass
+    
+    def global_progression_iter(self, batch):
+        
+        pos1 = torch.from_numpy(batch['flow_pos1']).to(self.device)
+        depth1 = torch.from_numpy(batch['depth1']).to(self.device)
+        fw_flow = torch.from_numpy(batch['fw_flow']).to(self.device)
+        depth2 = torch.from_numpy(batch['depth2']).to(self.device)
+        mask2 = torch.from_numpy(batch['mask2']).to(self.device)
+        valid_visible, _, confidence = parse_tapir_track_info(fw_flow[..., 2], fw_flow[..., 3])
+        
+        prev_pts = self.pcd_from_depth_flow(depth1, pos1[:, :2].long())
+        next_pts = self.pcd_from_depth_flow(depth2, fw_flow[:, :2])
+        
+        self.position_to_ply(self.debug_path / 'next_pts.ply', next_pts)
+        self.position_to_ply(self.debug_path / 'prev_pts.ply', prev_pts)
+        self.position_to_ply(self.debug_path / 'cur_pts.ply', torch.from_numpy(batch['cur_pts']))
+        next_pts_mask = self.pcd_from_depth_flow(mask2, fw_flow[:, :2])
+        valid_mask = next_pts_mask[:, -1].bool()
+        final_valid = torch.logical_and(valid_visible, valid_mask)
+        # valid_query = pos1[final_valid, :2]
+        # valid_traget = fw_flow[final_valid, :2]
+        # prev_pts_valid = self.pcd_from_depth_flow(depth1, valid_query.long())
+        # next_pts_valid = self.pcd_from_depth_flow(depth2, valid_traget.long())
+        
+        prev_pts_valid = prev_pts[final_valid]
+        next_pts_valid = next_pts[final_valid]
+        # generate flow mask for init_pcd
+        cur_motion_mask = torch.zeros_like(self.init_pcd[:, 0]).bool()
+        cur_motion_mask = torch.concat([cur_motion_mask, final_valid], dim=0)
+        
+        # concate points to init_pcd
+        self.init_pcd = torch.concat([self.init_pcd, prev_pts], dim=0)
+        
+        
+        # constructe learnable params for init_pcd
+        self.construct_learnable_motion_param(k_clusters=self.init_pcd.shape[0])
+        self.construct_motion_optimizer()
+        
+        next_pts_gt = next_pts_valid
+        self.call_hook('before_local_progression')
+        for i in range(self.cfg.local_progression_steps):
+            self.local_progression(cur_motion_mask, next_pts_gt)
+            self.local_step += 1 
+            self.call_hook('after_local_progression_iter')
+        self.call_hook('after_local_progression')
+        self.call_hook('after_global_progression_iter')
+        pass
+    
+    def local_progression(self, cur_motion_mask, next_pts_gt):
+        self.local_dict = {}
+        self.motion_optimizer.zero_grad()
+        next_pts_pred = compute_dynamic_position(self.init_pcd, self.motion_list[-1])
+        
+        # compute flow loss
+        # next_pts_gt = next_pts[final_valid]
+        next_pts_pred_flow = next_pts_pred[cur_motion_mask]
+        abs_flow_loss = torch.nn.functional.l1_loss(next_pts_pred_flow, next_pts_gt)
+        
+        
+        ii, jj, nn, _ = cal_connectivity_from_points(points=self.init_pcd, K=10)
+        arap_ip = torch.stack([self.init_pcd, next_pts_pred], dim=0)
+        rigid_error = cal_arap_error(arap_ip, ii, jj, nn)
+        
+        loss = abs_flow_loss + rigid_error
+        
+        self.local_dict.update(
+            {
+                'flow_loss': abs_flow_loss,
+                'rigid_loss': rigid_error
+                }
+                               )
+        
+        
+        loss.backward()
+        # compute 2D CD
+        
+        # update motion params
+        self.motion_optimizer.step()
+        self.motion_scheduler.step()
+        
+        pass
+    
+    # def construct_learnable_motion_param(self, requires_grad=True):
+    #     init_qua = torch.zeros([self.cfg.pose_free.k_clusters, 4], device=self.device)
+    #     init_qua[:, 0] = 1
+    #     init_trans = torch.zeros([self.cfg.pose_free.k_clusters, 3], device=self.device)
+    #     param_dict = {
+    #         'quaternion': torch.nn.Parameter(init_qua, requires_grad=requires_grad),
+    #         'translation': torch.nn.Parameter(init_trans, requires_grad=requires_grad)
+    #     }
+    #     self.motion_list += [param_dict]
+    #     pass
+    
+    
+    def pcd_from_depth_flow(self, depth, pos):
+        pts_depth = depth[pos.round().long()[:,0], pos.round().long()[:,1]].reshape(-1, 1)
+        denorm = torch.from_numpy(np.array([[self.w, self.h]])).to(self.device)
+        pos_norm = pos / denorm * 2 - 1
+        pts = torch.concat([pos_norm, pts_depth], axis=-1)
+        return pts.float()
+    
+    
+    def simple_progression(self, batch):
+        
+        
+        ext = torch.eye(4).to(self.device)
+        pts_1 = p_utils.retrieve_point_cloud(batch['depth1'], K=self.k, ext=ext, mask=batch['mask1'])
+        pts_2 = p_utils.retrieve_point_cloud(batch['depth2'], K=self.k, ext=ext, mask=batch['mask2'])
+        
+        self.construct_learnable_motion_param(k_clusters=pts_1.shape[0])
+        
+        pass
+    
+    def get_pts(self, batch, fidx=1):
+        pass
+    
+    def flow_motion(self, batch):
+        flow_src1 = batch['flow_pos1'].to(self.device)
+        flow_dst1 = batch['fw_flow'].to(self.device)
+        valid_visible, _, _ = parse_tapir_track_info(flow_dst1[..., 2], flow_dst1[..., 3])
+        flow_src_valid = flow_src1[valid_visible]
+        flow_dst_valid = flow_dst1[valid_visible]
+        
+        # flow_pos_mask = 
+        depth = batch['depth1'].to(self.device)
+        flow_mask = torch.zeros_like(depth)
+        flow_idx = flow_src_valid[:, :2].long()
+        flow_mask[flow_idx[:, 1], flow_idx[:, 0]] = 1
+        # debug_mask = flow_mask.unsqueeze(0)
+        # debug_mask_pil = tvF.to_pil_image(debug_mask)
+        # debug_mask_pil.save(self.debug_path / 'flow_mask.png')
+        
+        mask1 = batch['mask1'].to(self.device)
+        ext = torch.eye(4).to(self.device)
+        world_coords = p_utils.retrieve_point_cloud(depth, self.k, ext).float()
+        world_coords_with_flow = torch.concat([world_coords, flow_mask.view(-1, 1)], dim=-1).float() # [N, 4]
+        masked_indices = torch.where(mask1.view(-1) > 0)
+        pts_with_flow = world_coords_with_flow[masked_indices] #[k, 4]
+        
+        # gt_uv_mask = p_utils.retrieve_point_cloud(torch.from_numpy(batch['mask2']).to(pts_with_flow), self.k, ext)[:, :2]
+        mask2 = batch['mask2'].to(pts_with_flow)
+        mask2_idx = torch.where(mask2 == 1)
+        # flow_mask2 = torch.zeros_like(depth)
+        # flow_mask2[mask2_idx[0], mask2_idx[1]] = 1
+        # debug_mask2 = tvF.to_pil_image(flow_mask2)
+        # debug_mask2.save(self.debug_path / 'debug_mask2.png')
+        gt_uv_mask = torch.stack([mask2_idx[1], mask2_idx[0]], dim=1).to(pts_with_flow)
+        # debug
+        # pcd = o3d.geometry.PointCloud()
+        # pcd.points = o3d.utility.Vector3dVector(pts_with_flow.cpu().numpy()[:, :3])
+        # o3d.io.write_point_cloud(str(self.debug_path / 'mask_pts.ply'), pcd)
+        
+        # construct optimizer & params
+        self.construct_learnable_motion_param(k_clusters=pts_with_flow.shape[0])
+        self.construct_motion_optimizer()
+        
+        # optimization loop:
+        from tqdm.auto import tqdm
+        
+        
+        import msplat
+        import sys
+        # for i in tqdm(range(1000)):
+        total = self.cfg.pose_free.motion_steps
+        with tqdm(total=total, position=0, leave=True) as pbar:
+            for i in range(total):
+                self.motion_optimizer.zero_grad()
+                
+                final_pos = compute_dynamic_position(pts_with_flow[:, :3].float(), self.motion_list[-1])
+                
+                # compute loss
+                
+                # flow loss
+                flow_mask =pts_with_flow[:, -1]
+                intr = torch.Tensor([self.k[0, 0], self.k[1, 1], self.k[0, -1], self.k[1, -1]]).to(self.k)
+                (flow_uv_pred, _ ) = msplat.project_point(
+                    final_pos,
+                    intr=intr,
+                    extr=torch.eye(4).to(intr),
+                    W=self.w, 
+                    H=self.h,
+                    nearest=0.2
+                )
+                
+                flow_pos_pred = flow_uv_pred[flow_mask.bool()]
+                flow_loss = 10 * torch.nn.functional.l1_loss(flow_pos_pred, flow_dst_valid[:, :2])
+                
+                # rigid regularization
+                arap_reg = 100 * cal_arap_reg(pts_with_flow[:, :3], final_pos, K=20)
+                
+                # projected 2D Chamfer Distance ?
+                # import pytorch3d
+                # from pytorch3d.loss import chamfer_distance
+                # cd, _ = chamfer_distance(flow_uv_pred.unsqueeze(0), gt_uv_mask.unsqueeze(0), single_directional=True)
+                
+                
+                # add up the loss
+                loss = flow_loss + arap_reg #+ cd
+                
+                loss.backward()
+                self.motion_optimizer.step()
+                self.motion_scheduler.step()
+                # postfix = f'loss: {loss.item():.4f}, flow_loss: {flow_loss.item():.4f}, arap_reg: {arap_reg.item():.4f}'
+                
+                postfix = {
+                    'loss': f'{loss.item():.4f}',
+                    'flow_loss': f'{flow_loss.item():.4f}',
+                    'arap_reg': f'{arap_reg.item():.4f}',
+                    'cd': f'{0:.2f}'
+                    # 'cd': f'{cd.item():.4f}'
+                }
+                
+                pbar.set_postfix(postfix)
+                pbar.update(1)
+        
+        # save output for visualization
+        self.position_to_ply(self.debug_path / 'world_coords.ply', pts_with_flow[:, :3])
+        self.position_to_ply(self.debug_path/'flow_motion.ply', final_pos)
+        
+        # suppose we now obtain the correct motion
+        # find the correct scale for depth2 and add points to pts1
+        
+        depth2 = batch['depth2'].to(self.device)
+        
+        mask2 = batch['mask2'].to(self.device)
+        
+        pts_2 = p_utils.retrieve_point_cloud(depth2, self.k, torch.eye(4).to(self.device), mask=mask2).float()
+        
+        self.position_to_ply(self.debug_path / 'pts2.ply', pts_2)
+        
+        combine = torch.concat([pts_2, pts_with_flow[:, :3]], dim=0)
+        self.position_to_ply(self.debug_path / 'combine_before.ply', combine)
+        
+        combine = torch.concat([pts_2, final_pos], dim=0)
+        self.position_to_ply(self.debug_path / 'combine_after.ply', combine)
+        
+        # estimate scale based on the optical flow points
+        flow_final_pos = final_pos[flow_mask.bool()]
+        batch['flow_final_pos'] = flow_final_pos
+        batch['flow_final_uv'] = flow_pos_pred
+        batch['final_pos'] = final_pos
+        
+        return batch
+        # pass
+    
+    def construct_learnable_scale(self):
+        
+        self.motion_list[-1].update({'scale': torch.nn.Parameter(torch.zeros(1).to(self.device))})
+        params = [
+            {'params': self.motion_list[-1]['scale'],
+             'lr': 1e-3}
+        ]
+        self.scale_optimizer = torch.optim.SGD(params)
+        
+        pass
+    
+    def estimate_scale(self, batch):
+        
+        self.construct_learnable_scale()
+        
+        pred_pts = batch['flow_final_pos'].detach()
+        
+        depth2 = batch['depth2'].to(self.device).float()
+        
+        pred_uv = batch['flow_final_uv'].detach()
+        cur_scale = self.motion_list[-1]['scale']
+        self.motion_list[-1]['translation'].requires_grad_ = False
+        self.motion_list[-1]['quaternion'].requires_grad_ = False
+        
+        from tqdm.auto import tqdm
+        total = 1000
+        
+        with tqdm(total=total, position=0, leave=True) as pbar:
+            for i in range(total):
+                self.scale_optimizer.zero_grad()
+                scaled_depth = depth2 * cur_scale
+                target_pts = p_utils.get_point_cloud_given_uv(scaled_depth, pred_uv[:, 0], pred_uv[:, 1], K=self.k)
+                
+                # loss, _ = chamfer_distance(pred_pts.unsqueeze(0), target_pts.unsqueeze(0))
+                loss, _ = chamfer_distance(target_pts.unsqueeze(0), pred_pts.unsqueeze(0))
+                
+                loss.backward()
+                self.scale_optimizer.step()
+                postfix = {
+                    'loss_cd': f'{loss.item():.4f}'
+                }
+                pbar.set_postfix(postfix)
+                pbar.update(1)
+        pass
+        print(f'estimated scale is: {cur_scale[0].item()}')
+        # visualize result
+        mask2 = batch['mask2']
+        pts_2_scaled = p_utils.retrieve_point_cloud(depth2*cur_scale, self.k, torch.eye(4).to(self.device), mask=mask2).float()
+        final_pos = batch['final_pos']
+        combine = torch.concat([final_pos, pts_2_scaled], dim=0)
+        self.position_to_ply(self.debug_path/'scale_estimate.ply', combine)
+        batch['pts_2_scaled'] = pts_2_scaled.detach()
+        
+    def motion_estimation_fine_level(self, batch):
+        
+        final_pos = batch['final_pos'].detach()
+        
+        pts_2_scaled = batch['pts_2_scaled']
+        
+        
+        pass
+    
+    def add_new_region(self, batch):
+        pass
+    
+    def flow_cluster(self, batch):
+
+        pos1 = batch['flow_pos1'].astype(np.float32)
+        
+        fw_pos1 = batch['fw_flow'].astype(np.float32)
+        
+        valid_visible, _, confidence = parse_tapir_track_info(torch.from_numpy(fw_pos1[..., 2]), torch.from_numpy(fw_pos1[..., 3]))
+        
+        valid_pos1 = pos1[valid_visible]
+        valid_pos1_flow = fw_pos1[valid_visible]
+        
+        R, t, mask = p_utils.estimate_pose_ransac(valid_pos1[:, :2], valid_pos1_flow[:, :2], self.k.cpu().numpy().astype(np.float32))
+        
+        gt = np.array([
+                [
+                    -0.9510562419891357,
+                    -0.1402907371520996,
+                    0.2753360867500305,
+                    1.1013445854187012
+                ],
+                [
+                    0.3090169131755829,
+                    -0.4317704439163208,
+                    0.84739750623703,
+                    3.389590263366699
+                ],
+                [
+                    0.0,
+                    0.8910064101219177,
+                    0.45399051904678345,
+                    1.8159619569778442
+                ],
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                ]
+            ])
+        
+        print(f'total number of tracked points: {len(mask)}, number of inliners: {mask.sum()}, number of outliners: {len(mask) - mask.sum()}')
+        pass

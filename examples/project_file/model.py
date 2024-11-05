@@ -369,6 +369,7 @@ class VidArtModel(BaseModel):
         
         return final_pos
     
+    
     def compute_dynamic_rotation(self, motion_params):
         dy_q = motion_params['quaternion']
         label = self.point_cloud.kmeans_label

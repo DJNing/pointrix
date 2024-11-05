@@ -29,7 +29,10 @@ def points_init(init_cfg, point_cloud):
         features = get_random_feauture(num_points, init_cfg.feat_dim)
     elif init_type == 'custom':
         Logger.log("Number of points at initialisation : ", point_cloud.shape[0])
-        pos = torch.from_numpy(point_cloud).float()
+        try:
+            pos = torch.from_numpy(point_cloud).float()
+        except:
+            pos = point_cloud.float()
         num_points = pos.shape[0]
         features = get_random_feauture(num_points, init_cfg.feat_dim)
         # pass    

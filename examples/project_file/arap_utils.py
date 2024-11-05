@@ -42,7 +42,7 @@ def produce_edge_matrix_nfmt(verts: torch.Tensor, edge_shape, ii, jj, nn, device
 	"""Given a tensor of verts postion, p (V x 3), produce a tensor E, where, for neighbour list J,
 	E_in = p_i - p_(J[n])"""
 
-	E = torch.zeros(edge_shape).to(device)
+	E = torch.zeros(edge_shape).to(verts)
 	E[ii, nn] = verts[ii] - verts[jj]
 
 	return E
@@ -62,7 +62,7 @@ def estimate_rotation(source, target, ii, jj, nn, K=10, weight=None, sample_idx=
         source_edge_mat = source_edge_mat[sample_idx]
         target_edge_mat = target_edge_mat[sample_idx]
     ### Calculate covariance matrix in bulk
-    D = torch.diag_embed(weight, dim1=1, dim2=2)  # [Nv, K, K]
+    D = torch.diag_embed(weight, dim1=1, dim2=2).to(source_edge_mat)  # [Nv, K, K]
     # S = torch.bmm(source_edge_mat.permute(0, 2, 1), target_edge_mat)  # [Nv, 3, 3]
     S = torch.bmm(source_edge_mat.permute(0, 2, 1), torch.bmm(D, target_edge_mat))  # [Nv, 3, 3]
     ## in the case of no deflection, set S = 0, such that R = I. This is to avoid numerical errors
@@ -104,22 +104,22 @@ def cal_arap_error(nodes_sequence, ii, jj, nn, K=10, weight=None, sample_num=512
     else:
         source_edge_mat = source_edge_mat[sample_idx]
     weight = weight[sample_idx]
-    try:
-        for idx in range(1, Nt):
-            # t1 = time.time()
-            with torch.no_grad():
-                rotation = estimate_rotation(nodes_sequence[0], nodes_sequence[idx], ii, jj, nn, K=K, weight=weight, sample_idx=sample_idx)  # [Nv, 3, 3]
-            # Compute energy
-            target_edge_mat = produce_edge_matrix_nfmt(nodes_sequence[idx], (Nv, K, 3), ii, jj, nn)  # [Nv, K, 3]
-            target_edge_mat = target_edge_mat[sample_idx]
-            rot_rigid = torch.bmm(rotation, source_edge_mat[sample_idx].permute(0, 2, 1)).permute(0, 2, 1)  # [Nv, K, 3]
-            stretch_vec = target_edge_mat - rot_rigid  # stretch vector
-            stretch_norm = (torch.norm(stretch_vec, dim=2) ** 2)  # norm over (x,y,z) space
-            arap_error += (weight * stretch_norm).sum()
-        arap_error = arap_error / Nt
-    except Exception as e:
-        print(f"Error in cal_arap_error: {e}")
-        arap_error = 0
+    # try:
+    for idx in range(1, Nt):
+        # t1 = time.time()
+        with torch.no_grad():
+            rotation = estimate_rotation(nodes_sequence[0], nodes_sequence[idx], ii, jj, nn, K=K, weight=weight, sample_idx=sample_idx)  # [Nv, 3, 3]
+        # Compute energy
+        target_edge_mat = produce_edge_matrix_nfmt(nodes_sequence[idx], (Nv, K, 3), ii, jj, nn)  # [Nv, K, 3]
+        target_edge_mat = target_edge_mat[sample_idx]
+        rot_rigid = torch.bmm(rotation, source_edge_mat[sample_idx].permute(0, 2, 1)).permute(0, 2, 1)  # [Nv, K, 3]
+        stretch_vec = target_edge_mat - rot_rigid  # stretch vector
+        stretch_norm = (torch.norm(stretch_vec, dim=2) ** 2)  # norm over (x,y,z) space
+        arap_error += (weight * stretch_norm).sum()
+    arap_error = arap_error / Nt
+    # except Exception as e:
+    #     print(f"Error in cal_arap_error: {e}")
+    #     arap_error = 0
     return arap_error
 
 
@@ -139,3 +139,9 @@ def cal_smooth_error(features, ii, jj, nn, K=10, weight=None, sample_num=512):
     weight = weight[sample_idx]
     smooth_error = torch.abs(weight[...,None] * source_edge_mat[sample_idx]).sum()
     return smooth_error
+
+def cal_arap_reg(pts_src, pts_tgt, K=10) -> torch.Tensor:
+    ii, jj, nn, _ = cal_connectivity_from_points(points=pts_src, K=K)
+    arap_ip = torch.stack([pts_src, pts_tgt], dim=0)
+    rigid_error = cal_arap_error(arap_ip, ii, jj, nn, K=K)
+    return rigid_error

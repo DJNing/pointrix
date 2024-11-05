@@ -132,7 +132,7 @@ class MsplatOrthoRender(BaseObject):
         update_sh_iter: int = 1000
         max_sh_degree: int = 3
         render_depth: bool = True
-        enable_ortho_proj: bool = True
+        enable_ortho_proj: bool = False
         render_opacity: bool = True
         render_flow: bool = True
 
