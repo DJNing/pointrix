@@ -138,3 +138,22 @@ def gaussian_point_init(position, max_sh_degree, opc_init_scale=0.1):
     )
 
     return scales, rots, opacities, features_rest
+
+def gaussian_point_init_custom(position, max_sh_degree, opc_init_scale=0.1):
+    num_points = len(position)    
+    distances= k_nearest_sklearn(position.data, 3)
+    distances = torch.from_numpy(distances)
+    avg_dist = distances.mean(dim=-1, keepdim=True)
+    median_dist = torch.ones_like(avg_dist) * avg_dist.median()
+    scales = torch.log(median_dist).repeat(1, 3)
+    # scales = 0.01*torch.ones_like(position)
+    # Efficiently create a batch of identity quaternions
+    rots = torch.eye(4)[:1].repeat(num_points, 1)  
+    # opacities = sigmoid_inv(opc_init_scale * torch.ones((num_points, 1), dtype=torch.float32))
+    opacities = torch.ones((num_points, 1), dtype=torch.float32)
+    features_rest = torch.zeros(
+        (num_points, (max_sh_degree+1) ** 2 - 1, 3),
+        dtype=torch.float32
+    )
+
+    return scales, rots, opacities, features_rest

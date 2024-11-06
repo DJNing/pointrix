@@ -65,7 +65,7 @@ class VidArtModel(BaseModel):
     #     render_dict = self.construct_render_dict()
     #     pass
     
-    def forward(self, batch=None, trainint=True, render=True, iteration=None, init=False, render_features=None, motion_params=None) -> dict:
+    def forward(self, batch=None, trainint=True, render=True, iteration=None, init=False, render_features=None, motion_params=None, use_label=True, intrinsic=None) -> dict:
         """
         Forward pass of the model.
 
@@ -88,7 +88,11 @@ class VidArtModel(BaseModel):
         if motion_params is None:
             render_dict = self.construct_render_dict()
         else:
-            render_dict = self.construct_dynamic_render_dict(motion_params=motion_params)
+            render_dict = self.construct_dynamic_render_dict(motion_params=motion_params, use_label=use_label)
+            
+        if intrinsic is not None:
+            render_dict['intrinsic_params'] = intrinsic
+            
         if render_features is not None:
             render_dict.update({'render_features': render_features})
         if render:
@@ -123,17 +127,29 @@ class VidArtModel(BaseModel):
         pass
     
     def get_init_loss_dict(self, render_results, batch) -> dict:
-        depth_loss = self.get_depth_loss(render_results, batch)
-        opacity_loss = self.get_opacity_loss(render_results, batch)
+        # depth_loss = self.get_depth_loss(render_results, batch)
         
-        loss = self.cfg.loss_coef.depth * depth_loss + self.cfg.loss_coef.opa * opacity_loss #+ rgb_loss
+        if 'depth' in render_results:
+            depth_loss = self.cfg.loss_coef.depth * self.get_depth_loss(render_results, batch)
+        else:
+            depth_loss = torch.Tensor([0]).to(self.device)
+        
+        if 'opacity' in render_results:
+            opacity_loss = self.cfg.loss_coef.opa * self.get_opacity_loss(render_results, batch)
+        else:
+            opacity_loss = torch.Tensor([0]).to(self.device)
+        
+        # opacity_loss = self.get_opacity_loss(render_results, batch) 
+        
+        # loss = self.cfg.loss_coef.depth * depth_loss + self.cfg.loss_coef.opa * opacity_loss #+ rgb_loss
+        loss = depth_loss + opacity_loss
         
         # position loss, make sure the pixel location is the same as the rendered pixel location 
         if 'pose' in render_results:
             pos_loss = self.get_pos_loss(render_results, batch)
             loss += pos_loss
         else:
-            pos_loss = torch.Tensor([0]).to(loss)
+            pos_loss = torch.Tensor([0]).to(self.device)
         # position_loss = pass
         
         
@@ -141,7 +157,7 @@ class VidArtModel(BaseModel):
             rgb_loss = self.get_rgb_loss(render_results, batch)
             loss += rgb_loss
         else:
-            rgb_loss = torch.Tensor([0]).to(loss)
+            rgb_loss = torch.Tensor([0]).to(self.device)
         return {
             'loss': loss,
             'depth_loss': depth_loss,
@@ -152,7 +168,7 @@ class VidArtModel(BaseModel):
         }
     
     def get_pos_loss(self, render_results, batch):
-        flow_pos = torch.from_numpy(batch['flow_pos1']).to(self.device)
+        flow_pos = batch['flow_pos1'].to(self.device)
         query_pixel = flow_pos[:, :2].to(torch.int64)
         
         render_pos = render_results['pose'].permute(0, 2, 3, 1) # [1, h, w, 3]
@@ -176,9 +192,9 @@ class VidArtModel(BaseModel):
         # flow is rendered in frame 1 pose, the render value would be the pose in frame 2
         
         # prepare gt
-        flow_pos = torch.from_numpy(batch['flow_pos1']).to(self.device)
+        flow_pos = batch['flow_pos1'].to(self.device)
         query_pixel = flow_pos[:, :2].to(torch.int64)
-        fw_flow = torch.from_numpy(batch['fw_flow']).to(self.device)
+        fw_flow = batch['fw_flow'].to(self.device)
         valid_visible, _, confidence = parse_tapir_track_info(fw_flow[..., 2], fw_flow[..., 3])
         valid_visible = valid_visible.view(-1)
         confidence = confidence.view(-1)
@@ -258,8 +274,8 @@ class VidArtModel(BaseModel):
     
     def get_depth_loss(self, render_results, batch):
         pred_depth = render_results['depth']
-        gt_depth = torch.from_numpy(batch['depth1']).to(pred_depth)
-        mask = torch.from_numpy(batch['mask1']).to(pred_depth).view(-1, 1)
+        gt_depth = batch['depth1'].to(pred_depth)
+        mask = batch['mask1'].to(pred_depth).view(-1, 1)
         
         pred_masked = pred_depth.view(-1, 1)[mask > 0]
         gt_masked = gt_depth.view(-1, 1)[mask > 0]
@@ -275,16 +291,23 @@ class VidArtModel(BaseModel):
     
     def get_rgb_loss(self, render_results, batch):
         pred_rgb = render_results['rgb'].squeeze(0).permute(1, 2, 0)
-        gt_rgb = torch.from_numpy(batch['rgb1']).to(pred_rgb)
+        gt_rgb = batch['rgb1'].to(pred_rgb)
         rgb_loss = F.l1_loss(pred_rgb, gt_rgb)
         
         ssim_loss = ssim(pred_rgb, gt_rgb)
         final_loss = self.cfg.lambda_ssim * ssim_loss + (1 - self.cfg.lambda_ssim) * rgb_loss
         return final_loss
     
+    @staticmethod
+    def compute_rgb_loss(pred_rgb, gt_rgb):
+        l1_loss = F.l1_loss(pred_rgb, gt_rgb)
+        ssim_loss =ssim(pred_rgb, gt_rgb)
+        final_loss = 0.2 * ssim_loss + 0.8 * l1_loss
+        return final_loss 
+    
     def get_opacity_loss(self, render_results, batch):
         pred_opa = render_results['opacity']
-        gt_opa = torch.from_numpy(batch['mask1']).to(pred_opa)
+        gt_opa = batch['mask1'].to(pred_opa)
         opa_loss = F.mse_loss(pred_opa, gt_opa)
         return opa_loss
     
@@ -295,7 +318,7 @@ class VidArtModel(BaseModel):
     # def get_optimizer_dict(self, loss_dict, render_results, white_bg) -> dict:
     #     pass
     
-    def construct_dynamic_render_dict(self, motion_params):
+    def construct_dynamic_render_dict(self, motion_params, use_label=True):
         """
         define the fixed camera
 
@@ -311,8 +334,8 @@ class VidArtModel(BaseModel):
         extrinsic_matrix = torch.eye(4).unsqueeze(0)
         intrinsic_params = torch.tensor([self.w, self.h, self.w/2, self.h/2])
         
-        pos = self.compute_dynamic_position(motion_params)
-        rot = self.compute_dynamic_rotation(motion_params)
+        pos = self.compute_dynamic_position(motion_params, use_label=use_label)
+        rot = self.compute_dynamic_rotation(motion_params, use_label=use_label)
         render_dict = {
             "position": self.point_cloud.position,
             "opacity": self.point_cloud.get_opacity,
@@ -341,7 +364,7 @@ class VidArtModel(BaseModel):
         self.point_cloud.register_attribute("kmeans_label", label_one_hot, trainable=False)
         return
     
-    def compute_dynamic_position(self, motion_params):
+    def compute_dynamic_position(self, motion_params, use_label=True):
         static_pos = self.point_cloud.position
         dy_q = motion_params['quaternion']
         dy_T = motion_params['translation'].unsqueeze(1)
@@ -358,23 +381,31 @@ class VidArtModel(BaseModel):
         trans_homo[:, :, :3] = trans
         trans_homo[:, -1, -1] = 1
         
-        # collect the correct transformation based on kmeans clustering
-        label = self.point_cloud.kmeans_label
-        full_trans = torch.mm(label, trans_homo.view(-1, 16)).view(-1, 4, 4)
-        
-        # get position after transformation
-        dy_pos = torch.bmm(full_trans, homo_pos.unsqueeze(-1)).squeeze(-1)
-        # torch.einsum('ijk,kv->')
-        final_pos = dy_pos[:, :3] / dy_pos[:, 3:]
-        
+        if use_label:
+            # collect the correct transformation based on kmeans clustering
+            label = self.point_cloud.kmeans_label
+            full_trans = torch.mm(label, trans_homo.view(-1, 16)).view(-1, 4, 4)
+            
+            # get position after transformation
+            dy_pos = torch.bmm(full_trans, homo_pos.unsqueeze(-1)).squeeze(-1)
+            # torch.einsum('ijk,kv->')
+            final_pos = dy_pos[:, :3] / dy_pos[:, 3:]
+        else:
+            dy_pos = torch.bmm(trans_homo, homo_pos.unsqueeze(-1)).squeeze(-1)
+            final_pos = dy_pos[:, :3] / dy_pos[:, 3:]
+            
         return final_pos
     
     
-    def compute_dynamic_rotation(self, motion_params):
+    def compute_dynamic_rotation(self, motion_params, use_label=True):
         dy_q = motion_params['quaternion']
-        label = self.point_cloud.kmeans_label
         cur_q = self.point_cloud.get_rotation
-        full_dy_q = torch.mm(label, dy_q)
+        if use_label:
+            label = self.point_cloud.kmeans_label
+            full_dy_q = torch.mm(label, dy_q)
+        else:
+            full_dy_q = dy_q
+        
         new_q = apply_quaternion(cur_q, full_dy_q)
         return new_q
     

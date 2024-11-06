@@ -27,7 +27,7 @@ def main(args, extras) -> None:
     # try:
     # cfg.h = dataset.h
     # cfg.w = dataset.w
-    init_pcd = dataset.get_init_pcd()
+    init_pcd = dataset.get_dense_init_pcd()
     gaussian_trainer = ArtVidTrainer(
                         cfg.trainer,
                         cfg.exp_dir,
@@ -38,17 +38,20 @@ def main(args, extras) -> None:
                         init_pcd=init_pcd
                         )
     
-    # batch_init = dataset.__getitem__(0)
+    batch_init = dataset.__getitem__(0)
     # gaussian_trainer.train_progress(batch_init)
     
     # gaussian_trainer.flow_cluster(batch_init)
     # gaussian_trainer.train_init(batch_init)
     # gaussian_trainer.update_motion(batch_init)
+    gaussian_trainer.train_init_RGB(batch_init)
     for i in range(len(dataset)):
         batch = dataset.__getitem__(i)
         # gaussian_trainer.flow_cluster(batch)
+        # gaussian_trainer.train_init(batch)
         new_batch = gaussian_trainer.flow_motion(batch)
-        gaussian_trainer.estimate_scale(new_batch)
+        # scale_batch = gaussian_trainer.estimate_scale(new_batch)
+        # gaussian_trainer.motion_estimation_fine_level(scale_batch)
         break
 
 if __name__ == "__main__":

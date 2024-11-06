@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from .points import PointCloud, POINTSCLOUD_REGISTRY
 from .utils.point_utils import (
     sigmoid_inv,
-    gaussian_point_init
+    gaussian_point_init,
+    gaussian_point_init_custom
 )
 
 @POINTSCLOUD_REGISTRY.register()
@@ -34,7 +35,12 @@ class GaussianPointCloud(PointCloud):
         self.inverse_opacity_activation = sigmoid_inv
         self.rotation_activation = torch.nn.functional.normalize
 
-        scales, rots, opacities, features_rest = gaussian_point_init(
+        # scales, rots, opacities, features_rest = gaussian_point_init(
+        #     position=self.position,
+        #     max_sh_degree=self.cfg.max_sh_degree,
+        # )
+
+        scales, rots, opacities, features_rest = gaussian_point_init_custom(
             position=self.position,
             max_sh_degree=self.cfg.max_sh_degree,
         )
@@ -58,10 +64,16 @@ class GaussianPointCloud(PointCloud):
                 fused_color.contiguous().requires_grad_(True)
             )
         )
-        scales, rots, opacities, features_rest = gaussian_point_init(
+        
+        # scales, rots, opacities, features_rest = gaussian_point_init(
+        #     position=self.position,
+        #     max_sh_degree=self.cfg.max_sh_degree,
+        # )
+        scales, rots, opacities, features_rest = gaussian_point_init_custom(
             position=self.position,
             max_sh_degree=self.cfg.max_sh_degree,
         )
+        
         self.register_attribute("features_rest", features_rest)
         self.register_attribute("scaling", scales)
         self.register_attribute("rotation", rots)

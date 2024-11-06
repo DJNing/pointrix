@@ -11,6 +11,7 @@ import multiprocessing as mp
 from utils import normalize_coords, gen_grid_np
 from pathlib import Path as P
 from PIL import Image
+import progression_utils as p_utils
 
 def get_sample_weights(flow_stats):
     sample_weights = {}
@@ -169,6 +170,7 @@ class PoseFreeGSDataset(Dataset):
 
         h, w, _ = imageio.imread(os.path.join(self.img_dir, img_names[0])).shape
         self.h, self.w = h, w
+        self.k = torch.Tensor(np.array([[1098.990966796875, 0.0, 400.0], [0.0, 1098.990966796875, 400.0], [0.0, 0.0, 1.0]])).float()
         # max_interval = 3
         # self.max_interval = mp.Value('i', max_interval)
         # self.num_pts = self.args.num_pts
@@ -191,7 +193,7 @@ class PoseFreeGSDataset(Dataset):
         if id1 == len(self.img_names) - 1:
             id1 = 0
         
-        id2 = id1 + 1
+        id2 = id1 + 5
         
         rgb_1 = imageio.imread(str(self.img_dir / self.img_names[id1])) / 255.
         rgb_2 = imageio.imread(str(self.img_dir / self.img_names[id2])) / 255.
@@ -207,7 +209,7 @@ class PoseFreeGSDataset(Dataset):
             depth_1 = np.asarray(Image.open(self.detph_files[id1])) / 4000
             # depth_1 = depth_1 / depth_1.max()
             
-            depth_2 = np.asarray(Image.open(self.detph_files[id2])) / 1000
+            depth_2 = np.asarray(Image.open(self.detph_files[id2])) / 4000
             # depth_2 = depth_2 / depth_2.max()
         
         # load opt flow
@@ -241,6 +243,8 @@ class PoseFreeGSDataset(Dataset):
         data.update({'cur_pts': pts})
         next_pts = self.get_init_pcd_from_batch(data['depth2'], data['flow_pos2'])
         data.update({'next_pts': next_pts})
+        
+        
         for i, v in data.items():
             if type(v) != torch.Tensor:
                 try:
@@ -255,6 +259,14 @@ class PoseFreeGSDataset(Dataset):
         #     except:
         #         return_dict.update({k: v})
         
+        dense_pts = self.get_dense_pts(data['depth1'], data['mask1'])
+        next_dense_pts = self.get_dense_pts(data['depth2'], data['mask2'])
+        data.update(
+            {
+                "dense_pts": dense_pts,
+                "next_dense_pts": next_dense_pts
+            }
+        )
         return data
 
     def get_init_pcd(self):
@@ -282,4 +294,11 @@ class PoseFreeGSDataset(Dataset):
         pts = np.concatenate([pos_norm, pts_depth], axis=-1)
         return pts
         
+    def get_dense_pts(self, depth, mask):
+        ext = torch.eye(4).to(depth)
+        world_coords = p_utils.retrieve_point_cloud(depth, self.k.to(depth), ext, mask=mask).float()
+        return world_coords
     
+    def get_dense_init_pcd(self):
+        batch = self.__getitem__(0)
+        return batch['dense_pts']
