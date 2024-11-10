@@ -30,6 +30,15 @@
   </p>
 </div>
 
+## Introduction for articulated object modelling
+
+The development codes are located in the ```./examples/project_file```
+
+The data required for training is located in ```./examples/vid_art_GS/laptop_10211```, you could also change it to different location by modifying the configuration file in ```./examples/project_file/vid_art.yaml```
+
+Due to the complicated envoriments for different third-party projects, I would recommend to separate them in different envrionment.
+
+
 ## News
 - 2024-09-11: We have included instructions for hyperparameter search in the documentation.
 - 2024-09-02: We support all hyperparameter turning based on wandb, including "**random**", "**grid**" and "**bayes**" sweep configuration.
