@@ -31,6 +31,8 @@ from tqdm.auto import tqdm
 import msplat
 import sys
         
+     
+        
 class pseudo_datapipeline:
     point_cloud: None
         
@@ -661,6 +663,21 @@ class ArtVidTrainer():
         selected_flow_mask = flow_mask.view(-1)[masked_indices]
         pts_with_flow = torch.concat([world_coords, selected_flow_mask.view(-1, 1)], dim=-1).float()
         
+        # gather loftr mask
+        loftr_match = batch['loftr_match']
+        src_pos = loftr_match['keypoints0']
+        loftr_gt = loftr_match['keypoints1']
+        confidence = loftr_match['confidence']
+        match_mask = torch.zeros_like(depth)
+        match_idx = src_pos.to(flow_idx)
+        match_mask[match_idx[:, 1], match_idx[:, 0]] = 1
+        match_confidence_mask = torch.zeros_like(depth).float()
+        match_confidence_mask[match_idx[:, 1], match_idx[:, 0]] = confidence
+        loftr_mask = match_mask.view(-1)[masked_indices]
+        loftr_confidence = match_confidence_mask.view(-1)[masked_indices]
+        
+        
+        
         # gt_uv_mask = p_utils.retrieve_point_cloud(torch.from_numpy(batch['mask2']).to(pts_with_flow), self.k, ext)[:, :2]
         mask2 = batch['mask2'].to(pts_with_flow)
         mask2_idx = torch.where(mask2 == 1)
@@ -717,6 +734,10 @@ class ArtVidTrainer():
                 # rigid regularization
                 arap_reg = 100 * cal_arap_reg(pts_with_flow[:, :3], final_pos, K=10)
                 
+                # compute loftr matching loss
+                loftr_pos_pred = flow_uv_pred[loftr_mask.bool()]
+                loftr_loss = 0 * torch.nn.functional.l1_loss(loftr_pos_pred, loftr_gt)
+                
                 # projected 2D Chamfer Distance ?
                 # import pytorch3d
                 # from pytorch3d.loss import chamfer_distance
@@ -770,20 +791,21 @@ class ArtVidTrainer():
                 # if i > 1500:
                 # loss = flow_loss + arap_reg #+ cd
                 # loss = flow_loss + arap_reg #+ abs_depth_loss
-                loss = flow_loss + arap_reg + rgb_loss
+                loss = flow_loss + arap_reg + rgb_loss + loftr_loss
                 loss.backward()
                 self.motion_optimizer.step()
                 self.motion_scheduler.step()
                 # postfix = f'loss: {loss.item():.4f}, flow_loss: {flow_loss.item():.4f}, arap_reg: {arap_reg.item():.4f}'
                 
                 postfix = {
-                    'loss': f'{loss.item():.4f}',
-                    'flow_loss': f'{flow_loss.item():.4f}',
+                    'loss': f'{loss.item():4f}',
+                    'flow_loss': f'{flow_loss.item():4f}',
                     # 'cd': f'{0:.2f}'
                     # 'depth_loss': f'{abs_depth_loss:0.4f}'
-                    'rgb_loss': f'{rgb_loss.item():.4f}',
+                    'rgb_loss': f'{rgb_loss.item():4f}',
+                    'loftr_loss': f'{loftr_loss.item():4f}',
                     # 'cd': f'{cd.item():.4f}'
-                    'arap_reg': f'{arap_reg.item():.4f}'
+                    'arap_reg': f'{arap_reg.item():4f}'
                 }
                 
                 pbar.set_postfix(postfix)
@@ -799,7 +821,15 @@ class ArtVidTrainer():
         depth2 = batch['depth2'].to(self.device)
         
         mask2 = batch['mask2'].to(self.device)
+        rgb2 = batch['rgb2']
+        rgb1 = batch['rgb1']
         
+        match_img = connect_keypoints(rgb1*255, rgb2*255, loftr_match['keypoints0'].cpu().numpy(), loftr_match['keypoints1'].cpu().numpy())
+        cv2.imwrite(str(self.debug_path / 'match_img.png'), match_img)
+        
+        
+        rgb2_pil = tvF.to_pil_image(rgb2.permute(2, 0, 1))
+        rgb2_pil.save(self.debug_path / 'gt_rgb_motion.png')
         render_rgb_pil = tvF.to_pil_image(render_rgb)
         render_rgb_pil.save(self.debug_path / 'pred_rgb_motion.png')
         

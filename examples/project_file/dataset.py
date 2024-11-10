@@ -150,9 +150,10 @@ class PoseFreeGSDataset(Dataset):
         # self.img_dir = "/mnt/sda/syt/dataset/laptop_10211/processed/images"
         self.img_dir = self.seq_dir / self.seq_name / 'images'
         self.mask_dir = self.seq_dir / self.seq_name / 'masks'
-        # self.depth_dir = self.seq_dir / self.seq_name / 'aligned_depth_anything_v2'
-        self.depth_dir = self.seq_dir / self.seq_name / 'depth_gt'
+        self.depth_dir = self.seq_dir / self.seq_name / 'aligned_depth_anything_v2'
+        # self.depth_dir = self.seq_dir / self.seq_name / 'depth_gt'
         self.flow_dir = self.seq_dir / self.seq_name / 'bootstapir'
+        self.match_dir = self.seq_dir / self.seq_name / 'loftr_matches'
         
         if 'gt' in str(self.depth_dir):
             self.detph_files = sorted([str(f) for f in self.depth_dir.glob('*.png')])
@@ -193,7 +194,7 @@ class PoseFreeGSDataset(Dataset):
         if id1 == len(self.img_names) - 1:
             id1 = 0
         
-        id2 = id1 + 5
+        id2 = id1 + 3
         
         rgb_1 = imageio.imread(str(self.img_dir / self.img_names[id1])) / 255.
         rgb_2 = imageio.imread(str(self.img_dir / self.img_names[id2])) / 255.
@@ -223,6 +224,10 @@ class PoseFreeGSDataset(Dataset):
         pos1 = np.load(str(self.flow_dir/pos1_fname))
         pos2 = np.load(str(self.flow_dir/pos2_fname))
         
+        # load loftr matches
+        loftr_name = f'{id1:04d}_{id2:04d}.pth'
+        loftr_match = torch.load(self.match_dir / loftr_name)
+        
         
         data = {
             'id1': id1,
@@ -236,7 +241,8 @@ class PoseFreeGSDataset(Dataset):
             'fw_flow': fw_flow,
             'bw_flow': bw_flow,
             'flow_pos1': pos1,
-            'flow_pos2': pos2
+            'flow_pos2': pos2,
+            'loftr_match': loftr_match
         }
         
         pts = self.get_init_pcd_from_batch(data['depth1'], data['flow_pos1'])
