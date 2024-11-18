@@ -225,37 +225,6 @@ class VidArtModel(BaseModel):
         pass
     
     def get_motion_loss_dict(self, render_results, batch) -> dict:
-        # flow_pos = torch.from_numpy(batch['flow_pos2']).to(self.device) #[N, 4], with 4 as [u, v, occlusions, confidence]
-        # bw_flow = torch.from_numpy(batch['bw_flow']).to(self.device)
-        # valid_visible, _, confidence = parse_tapir_track_info(bw_flow[..., 2], bw_flow[..., 3])
-        # valid_visible = valid_visible.view(-1)
-        # confidence = confidence.view(-1)
-        
-        # render_flow = render_results['flow'].permute(0, 2, 3, 1) # [1, h, w, 3]
-        # pred_bw_flow = denormalize_coords(render_flow[..., :2], self.h, self.w)
-        
-        # pixel_mask = torch.zeros_like(pred_bw_flow[..., 0])
-        
-        # query_pixel = flow_pos[:, :2].to(torch.int64)
-        # pixel_mask[0, query_pixel[:, 1], query_pixel[:, 0]] = 1
-        # pixel_mask_flatten = (pixel_mask.reshape(-1, self.h * self.w) > 0.5)
-        # # pred_bw_flow = pred_bw_flow.view(-1, self.w * self.h, 2)
-        # # mask_pred_flow = pred_bw_flow[pixel_mask_flatten][valid_visible]
-        
-        # mask_pred_flow = self.collect_valid_pos(render_flow, pixel_mask_flatten, valid_visible)
-        # mask_gt_flow = bw_flow[valid_visible][..., :2]
-        # # from matplotlib import pyplot as plt
-        # # plt.imsave('debug_mask.png', pixel_mask.detach().cpu().squeeze(0).numpy())
-        # # plt.imsave('flow_0.png', pred_bw_flow[0,:, :, 0].detach().cpu().numpy())
-        
-        # flow_loss = masked_l1_loss(
-        #     mask_pred_flow,
-        #     mask_gt_flow,
-        #     mask = confidence[valid_visible],
-        #     quantile=0.98
-        # ) / max(self.h, self.w)
-        
-        # return flow_loss
         flow_loss = self.get_fw_flow_loss(render_results, batch)
         
         loss = flow_loss

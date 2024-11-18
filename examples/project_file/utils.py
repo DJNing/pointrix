@@ -690,9 +690,14 @@ def draw_points(image, coordinates, color=(0, 1, 0), point_size=3):
 def retrive_points_given_uv(self):
     pass
 
-def compute_dynamic_position(static_pos, motion_params):
-    dy_q = motion_params['quaternion']
-    dy_T = motion_params['translation'].unsqueeze(1)
+def compute_dynamic_position(static_pos, motion_params, detach=False, forward=True):
+    if detach:
+        dy_q = motion_params['quaternion'].detach()
+        dy_T = motion_params['translation'].unsqueeze(1).detach()
+    else:
+        dy_q = motion_params['quaternion']
+        dy_T = motion_params['translation'].unsqueeze(1)
+    
     pts_num = static_pos.shape[0]
     homo_pos = torch.concat(
         (static_pos, torch.ones([pts_num, 1], device=static_pos.device)),
@@ -705,25 +710,57 @@ def compute_dynamic_position(static_pos, motion_params):
     trans_homo = torch.zeros([dy_rot.shape[0], 4, 4]).to(dy_rot)
     trans_homo[:, :, :3] = trans
     trans_homo[:, -1, -1] = 1
-    
+    if forward is not True:
+        final_trans_homo = torch.linalg.inv(trans_homo)
+    else:
+        final_trans_homo = trans_homo
     # collect the correct transformation based on kmeans clustering
     # label = self.point_cloud.kmeans_label
     # full_trans = torch.mm(label, trans_homo.view(-1, 16)).view(-1, 4, 4)
     
     # get position after transformation
-    dy_pos = torch.bmm(trans_homo, homo_pos.unsqueeze(-1)).squeeze(-1)
+    dy_pos = torch.bmm(final_trans_homo, homo_pos.unsqueeze(-1)).squeeze(-1)
     # torch.einsum('ijk,kv->')
     final_pos = dy_pos[:, :3] / dy_pos[:, 3:]
     
     return final_pos
 
-def compute_dynamic_rotation(cur_q, motion_params):
+def compute_dynamic_rotation(cur_q, motion_params, detach=False, forward=True):
+    
     dy_q = motion_params['quaternion']
+    if detach:
+        dy_q = dy_q.detach()
     # label = self.point_cloud.kmeans_label
     # cur_q = self.point_cloud.get_rotation
     # full_dy_q = torch.mm(label, dy_q)
-    new_q = apply_quaternion(cur_q, dy_q)
+    new_q = apply_quaternion(cur_q, dy_q, forward=forward)
     return new_q
+
+def connect_keypoints(image_1, image_2, kps_1, kps_2):
+    # Ensure keypoints are numpy arrays
+    # kps_1 = np.array(kps_1, dtype=np.float32)
+    # kps_2 = np.array(kps_2, dtype=np.float32)
+
+    # Create a new image that can hold both the input images side by side
+    height = max(image_1.shape[0], image_2.shape[0])
+    width = image_1.shape[1] + image_2.shape[1]
+    output_image = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    # Place the first image on the left
+    output_image[:image_1.shape[0], :image_1.shape[1]] = image_1
+    # Place the second image on the right
+    output_image[:image_2.shape[0], image_1.shape[1]:image_1.shape[1]+image_2.shape[1]] = image_2
+    
+    # Adjust keypoints in kps_2 for the offset created by the width of the first image
+    kps_2[:, 0] += image_1.shape[1]
+
+    # Draw lines between corresponding keypoints
+    for (x1, y1), (x2, y2) in zip(kps_1, kps_2):
+        point1 = (int(round(x1)), int(round(y1)))
+        point2 = (int(round(x2)), int(round(y2)))
+        cv2.line(output_image, point1, point2, (255, 0, 0), 2)  # Blue line with thickness 2
+
+    return output_image   
 
 # def depth_scale_invariant_loss(pts_a, pts_b):
     

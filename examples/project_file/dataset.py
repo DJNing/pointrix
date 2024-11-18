@@ -87,8 +87,10 @@ class GSSimpleDataset(Dataset):
 
         weights = pair_weight
 
-        gt_rgb1 = torch.from_numpy(img1).float().reshape(-1,3)
-
+        gt_rgb1 = torch.from_numpy(img1).float()#.reshape(-1,3)
+        _, _, rgb_channel = gt_rgb1.shape
+        if rgb_channel == 4:
+            gt_rgb1 = gt_rgb1[:, :, :3]
         data = {'ids1': id1,
                 'ids2': id2,
                 'gt_rgb1': gt_rgb1,  # [n_pts, 3]
@@ -153,7 +155,7 @@ class PoseFreeGSDataset(Dataset):
         self.depth_dir = self.seq_dir / self.seq_name / 'aligned_depth_anything_v2'
         # self.depth_dir = self.seq_dir / self.seq_name / 'depth_gt'
         self.flow_dir = self.seq_dir / self.seq_name / 'bootstapir'
-        self.match_dir = self.seq_dir / self.seq_name / 'loftr_matches'
+        self.match_dir = self.seq_dir / self.seq_name / 'roma'
         
         if 'gt' in str(self.depth_dir):
             self.detph_files = sorted([str(f) for f in self.depth_dir.glob('*.png')])
@@ -226,7 +228,10 @@ class PoseFreeGSDataset(Dataset):
         
         # load loftr matches
         loftr_name = f'{id1:04d}_{id2:04d}.pth'
-        loftr_match = torch.load(self.match_dir / loftr_name)
+        try:
+            loftr_match = torch.load(self.match_dir / loftr_name)
+        except:
+            loftr_match = None
         
         
         data = {
@@ -242,7 +247,8 @@ class PoseFreeGSDataset(Dataset):
             'bw_flow': bw_flow,
             'flow_pos1': pos1,
             'flow_pos2': pos2,
-            'loftr_match': loftr_match
+            'pix_match': loftr_match,
+            'idx': id1
         }
         
         pts = self.get_init_pcd_from_batch(data['depth1'], data['flow_pos1'])
@@ -305,6 +311,18 @@ class PoseFreeGSDataset(Dataset):
         world_coords = p_utils.retrieve_point_cloud(depth, self.k.to(depth), ext, mask=mask).float()
         return world_coords
     
-    def get_dense_init_pcd(self):
-        batch = self.__getitem__(0)
+    def get_dense_init_pcd(self, index=0):
+        batch = self.__getitem__(index=index)
         return batch['dense_pts']
+    
+    def find_largest_mask(self):
+        max_pts = 0
+        for idx, fname in enumerate(self.img_names):
+            cur_mask_name = self.mask_dir / fname
+            cur_mask = imageio.imread(str(cur_mask_name)) / 255.
+            cur_pts = torch.from_numpy(cur_mask).sum()
+            if cur_pts > max_pts:
+                max_idx = idx
+                max_pts = cur_pts
+                print(max_pts)
+        return max_idx

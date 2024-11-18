@@ -9,6 +9,7 @@ trainer:
     debug: True
     geo_steps: 2000
     motion_steps: 2000
+    local_steps: 1000
     init_q_lr: 1e-2
     end_q_lr: 1e-5
     init_t_lr: 1e-2
@@ -20,7 +21,7 @@ trainer:
     name: VidArtModel
     lambda_ssim: 0.2
     point_cloud:
-      point_cloud_type: "GaussianPointCloud"  
+      point_cloud_type: "GaussianPointCloud_v2"  
       max_sh_degree: 3
       trainable: true
       unwarp_prefix: "point_cloud"
@@ -69,7 +70,23 @@ trainer:
           lr: 0.05
       # camera_params:
       #   lr: 1e-3
-  
+  local_optimizer:
+    optimizer_1:
+      type: BaseOptimizer
+      name: Adam
+      args:
+        eps: 1e-15
+      extra_cfg:
+        backward: False
+      params:
+        scale:
+          lr: 0.00016
+        features:
+          lr: 0.0025
+        features_rest:
+          lr: 0.000125 # features/20
+        opacity:
+          lr: 0.05
   scheduler:
     name: "ExponLRScheduler"
     params:
@@ -77,6 +94,14 @@ trainer:
         init:  0.00016
         final: 0.0000016
         max_steps: ${trainer.pose_free.geo_steps}
+
+  local_scheduler:
+    name: "ExponLRScheduler"
+    params:
+      position:
+        init:  0.00016
+        final: 0.0000016
+        max_steps: ${trainer.pose_free.local_steps}
   datapipeline:
     data_set: "ColmapDepthNormalDataset"
     shuffle: False
