@@ -23,6 +23,7 @@ def get_sample_weights(flow_stats):
     return sample_weights
 
 
+
 class GSSimpleDataset(Dataset):
     def __init__(self, args, max_interval=None):
         self.args = args
@@ -36,6 +37,7 @@ class GSSimpleDataset(Dataset):
         self.img_dir = os.path.join(img_path, 'images')
         self.mask_dir = os.path.join(img_path, 'masks')
         self.flow_dir = os.path.join(img_path, 'raft_exhaustive')
+        self.f_interval = int(args.dataset.frame_interval)
         img_names = sorted(os.listdir(self.img_dir))
         if self.args.num_imgs < 0:
             self.num_imgs = len(img_names)
@@ -146,14 +148,16 @@ class PoseFreeGSDataset(Dataset):
         self.args = args
         self.seq_dir = P(args.data_path)
         self.seq_name = args.seq_name
+        
+        self.f_interval = int(args.frame_interval)
         # self.img_dir = os.path.join(self.seq_dir, 'JPEGImages/480p', self.seq_name)
         # import pdb
         # pdb.set_trace()
         # self.img_dir = "/mnt/sda/syt/dataset/laptop_10211/processed/images"
         self.img_dir = self.seq_dir / self.seq_name / 'images'
         self.mask_dir = self.seq_dir / self.seq_name / 'masks'
-        self.depth_dir = self.seq_dir / self.seq_name / 'aligned_depth_anything_v2'
-        # self.depth_dir = self.seq_dir / self.seq_name / 'depth_gt'
+        # self.depth_dir = self.seq_dir / self.seq_name / 'aligned_depth_anything_v2'
+        self.depth_dir = self.seq_dir / self.seq_name / 'depth_gt'
         self.flow_dir = self.seq_dir / self.seq_name / 'bootstapir'
         self.match_dir = self.seq_dir / self.seq_name / 'roma'
         
@@ -196,7 +200,7 @@ class PoseFreeGSDataset(Dataset):
         if id1 == len(self.img_names) - 1:
             id1 = 0
         
-        id2 = id1 + 3
+        id2 = id1 + self.f_interval
         
         rgb_1 = imageio.imread(str(self.img_dir / self.img_names[id1])) / 255.
         rgb_2 = imageio.imread(str(self.img_dir / self.img_names[id2])) / 255.

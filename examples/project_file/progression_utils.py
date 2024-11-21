@@ -121,7 +121,7 @@ def get_point_cloud_given_uv(depth, u, v, K):
     # Stack into a [N, 3] tensor where N is number of points
     pts = torch.stack((x, y, z), dim=1)
 
-    return pts
+    return pts.float()
 
 def scale_alignment(depth_map1: torch.Tensor, depth_map2: torch.Tensor, pos1: torch.Tensor, pos2: torch.Tensor) -> float:
     '''

@@ -165,7 +165,7 @@ class PointCloud(BaseModule):
                 )
             )
     
-    def get_all_atributes(self) -> list:
+    def get_all_attributes(self) -> list:
         """
         return all atribute of the point cloud.
         

@@ -41,19 +41,22 @@ def main(args, extras) -> None:
                         dataset=dataset,
                         init_pcd=init_pcd
                         )
-    batch_init = dataset.__getitem__(init_idx)
-    # gaussian_trainer.train_progress(batch_init)
+    f_idx = 0
     
-    # gaussian_trainer.flow_cluster(batch_init)
-    # gaussian_trainer.train_init(batch_init)
-    # gaussian_trainer.update_motion(batch_init)
-    gaussian_trainer.train_init_RGB(batch_init)
-    # for i in range(len(dataset)):
-    batch = dataset.__getitem__(init_idx)
-    # gaussian_trainer.flow_cluster(batch)
-    # gaussian_trainer.train_init(batch)
-    new_batch = gaussian_trainer.flow_motion(batch)
-    gaussian_trainer.optimize_new_frame(new_batch)
+    cur_debug_path = f'{f_idx:04d}'
+    gaussian_trainer.debug_path = gaussian_trainer.debug_path / cur_debug_path
+
+    gaussian_trainer.debug_path.mkdir(exist_ok=True)    
+    while f_idx < len(dataset):
+        batch = dataset.__getitem__(f_idx)
+        gaussian_trainer.train_init_RGB(batch)
+        new_batch = gaussian_trainer.flow_motion(batch)
+        gaussian_trainer.optimize_new_frame(new_batch)
+        f_idx += int(cfg.trainer.pose_free.frame_interval)
+        cur_debug_path = f'{f_idx:04d}'
+        gaussian_trainer.debug_path = gaussian_trainer.debug_path.parent / cur_debug_path
+
+        gaussian_trainer.debug_path.mkdir(exist_ok=True)
     # scale_batch = gaussian_trainer.estimate_scale(new_batch)
         # gaussian_trainer.motion_estimation_fine_level(scale_batch)
         # break
