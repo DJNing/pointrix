@@ -2,6 +2,8 @@ import torch
 import cv2
 import numpy as np
 from pointrix.utils.pose import ConcatRT, quat_to_rotmat, apply_quaternion
+from pytorch3d.ops import knn_points, knn_gather
+
 
 def retrieve_point_cloud(depth: torch.Tensor, K: torch.Tensor, ext: torch.Tensor = None, mask: torch.Tensor = None) -> torch.Tensor:
     """
@@ -208,3 +210,38 @@ def estimate_pose_ransac(pts_a, pts_b, K):
     
     
 #     pass
+
+
+def motion_temporal_smoothness(motions):
+    # rotation is near identiacl
+    
+    # translation is near 0
+    
+    pass
+
+def motion_local_smoothness(motions, knn_idx):
+    '''
+    
+    knn_idx: in one hot format
+    '''
+    _, n, k = knn_idx.shape
+    qua = motions['quaternion']
+    trans = motions['translation']
+    rotmat = quat_to_rotmat(qua)
+    # R1 dot R2' = I
+    rotmat_reshape = rotmat.unsqueeze(0).view(1, -1, 9)
+    rotmat_gather = knn_gather(rotmat_reshape, knn_idx)
+    rotmat_gather = rotmat_gather.view(n, k, 3, 3).permute(0, 1, 3, 2) # transpose
+    rotmat_original = rotmat.unsqueeze(1).repeat(1, k, 1, 1)
+    rot_id = torch.eye(3).view(1, 1, 3, 3).repeat(n, k, 1, 1).to(rotmat_original)
+    rot_mult = torch.einsum('ijkl,ijkl->ijkl', rotmat_original, rotmat_gather) 
+    rot_diff = rot_mult - rot_id
+    rot_diff_norm = torch.linalg.norm(rot_diff, ord='fro', dim=[2, 3]).mean()
+    
+    # T1 - T2 = 0
+    trans_reshape = trans.unsqueeze(0)
+    trans_gather = knn_gather(trans_reshape, knn_idx)
+    trans_original = trans.unsqueeze(1).repeat(1, 1, k, 1)
+    trans_diff = trans_gather - trans_original
+    trans_norm = trans_diff.abs().sum(dim=-1).max()
+    return rot_diff_norm, trans_norm

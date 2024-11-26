@@ -783,77 +783,26 @@ class ArtVidTrainer():
         motion_pts_rot = preprocess_dict['motion_pts_rot']
         motion_dst = preprocess_dict['motion_dst']
         fg_motion_mask = preprocess_dict['fg_motion_mask']
-        # pre_time = time.time() - start
-        
-        # flow_src1 = batch['flow_pos1'].to(self.device)
-        # flow_dst1 = batch['fw_flow'].to(self.device)
-        # valid_visible, _, _ = parse_tapir_track_info(flow_dst1[..., 2], flow_dst1[..., 3])
-        # flow_src_valid = flow_src1[valid_visible]
-        # flow_dst_valid = flow_dst1[valid_visible]
-        
-        # # flow_pos_mask = 
-        # depth = batch['depth1'].to(self.device)
-        # flow_mask = torch.zeros_like(depth)
-        # flow_idx = flow_src_valid[:, :2].long()
-        # flow_mask[flow_idx[:, 1], flow_idx[:, 0]] = 1
-        
-        
-        # mask1 = batch['mask1'].to(self.device)
-        # mask2 = batch['mask2'].to(self.device)
-        # if mask1.sum() < mask2.sum():
-        #     raise ValueError('mask1 should > mask2')
-        # ext = torch.eye(4).to(self.device)
-        
-        # world_coords = self.model.point_cloud.position
-        # masked_indices = torch.where(mask1.view(-1) > 0)
-        # selected_flow_mask = flow_mask.view(-1)[masked_indices]
-        # pts_with_flow = torch.concat([world_coords, selected_flow_mask.view(-1, 1)], dim=-1).float()
-        
-        # # gather loftr mask
-        # pix_match = batch['pix_match']
-        # src_pos = pix_match['kpts1']
-        # loftr_gt = pix_match['kpts2']
-        # # confidence = pix_match['confidence']
-        # match_mask = torch.zeros_like(depth)
-        # match_idx = src_pos.to(flow_idx).round()
-        # match_mask[match_idx[:, 1], match_idx[:, 0]] = 1
-        
-        # # loftr_mask = match_mask.view(-1)[masked_indices]
-        
-        
-        # # filter match
-        # mask_pos = torch.zeros(self.h, self.w, 2).to(loftr_gt)
-        # mask_pos[match_idx[:, 1], match_idx[:, 0]] = loftr_gt
-        # # mask_pos_indexed = mask_pos.view(-1, 2)[masked_indices].to(depth)
-        # # match_gt = mask_pos_indexed[loftr_mask.bool()]
-        
-        # # gt_uv_mask = p_utils.retrieve_point_cloud(torch.from_numpy(batch['mask2']).to(pts_with_flow), self.k, ext)[:, :2]
-        # mask2 = batch['mask2'].to(pts_with_flow)
-        # mask2_idx = torch.where(mask2 == 1)
-        # flow_mask2 = torch.zeros_like(depth)
-        # flow_mask2[mask2_idx[0], mask2_idx[1]] = 1
-        # debug_mask2 = tvF.to_pil_image(flow_mask2)
-        # debug_mask2.save(self.debug_path / 'debug_mask2.png')
-        # gt_uv_mask = torch.stack([mask2_idx[1], mask2_idx[0]], dim=1).to(pts_with_flow)
-        # debug
-        # pcd = o3d.geometry.PointCloud()
-        # pcd.points = o3d.utility.Vector3dVector(pts_with_flow.cpu().numpy()[:, :3])
-        # o3d.io.write_point_cloud(str(self.debug_path / 'mask_pts.ply'), pcd)
-        
-        # apply kmeans before optimize pos
-        
-        # cur_pts_pos = preprocess_dict['motion_pts_pos']
         
         cur_pts_pos_np = motion_pts_pos.detach().cpu().numpy()
         init_centroid = motion_pts_pos[fg_motion_mask.bool()].detach().cpu().numpy()
-        _, knn_label = kmeans2(cur_pts_pos_np, init_centroid, minit='matrix')        
+        centroid, knn_label = kmeans2(cur_pts_pos_np, init_centroid, minit='matrix')        
         knn_label_pt = torch.from_numpy(knn_label)
         knn_label_one_hot = torch.nn.functional.one_hot(knn_label_pt.long()).to(self.device)
+        
+        # _, centroid_knn_label = kmeans2(init_centroid, init_centroid, minit='matrix')
+        
+        # centroid_pt = motion_pts_pos[fg_motion_mask.bool()].detach().unsqueeze(0)
+        centroid_pt = torch.from_numpy(centroid).to(motion_pts_pos).unsqueeze(0)
+        _, centroid_knn_idx, _ = knn_points(centroid_pt, centroid_pt, K=10)
         
         
         # construct optimizer & params
         self.construct_learnable_motion_param(k_clusters=init_centroid.shape[0])
         self.construct_motion_optimizer()
+        
+        # debug
+        # p_utils.motion_local_smoothness(self.motion_list[-1], centroid_knn_idx)
         
         # render params
         extr = torch.eye(4).to(self.device)
@@ -892,33 +841,16 @@ class ArtVidTrainer():
                 )
                 
                 flow_pos_pred = flow_uv_pred[fg_motion_mask.bool()]
-                flow_loss = 10 * torch.nn.functional.l1_loss(flow_pos_pred, motion_dst[:, :2])
+                flow_loss = 0.1*torch.nn.functional.l1_loss(flow_pos_pred, motion_dst[:, :2])
                 
                 # rigid regularization
-                arap_reg = 100 * cal_arap_reg(motion_pts_pos[fg_motion_mask.bool()], final_pos[fg_motion_mask.bool()], K=20)
+                arap_reg = 10 * cal_arap_reg(motion_pts_pos[fg_motion_mask.bool()], final_pos[fg_motion_mask.bool()], K=20)
                 
-                # compute loftr matching loss
-                # loftr_pos_pred = flow_uv_pred[loftr_mask.bool()]
-                # loftr_loss = 1 * torch.nn.functional.l1_loss(loftr_pos_pred, match_gt)
+                # local smoothness regularization
+                rot_reg, trans_reg = p_utils.motion_local_smoothness(self.motion_list[-1], centroid_knn_idx)
+                local_rot = 100 * rot_reg
+                local_trans = 100 * trans_reg
                 
-                # projected 2D Chamfer Distance ?
-                # import pytorch3d
-                # from pytorch3d.loss import chamfer_distance
-                # cd, _ = chamfer_distance(flow_uv_pred.unsqueeze(0), gt_uv_mask.unsqueeze(0), single_directional=True)
-                
-                # render depth image and get depth supervision
-                # def render_iter(self,
-                #     height,
-                #     width,
-                #     extrinsic_matrix,
-                #     intrinsic_params,
-                #     camera_center,
-                #     position,
-                #     opacity,
-                #     scaling,
-                #     rotation,
-                #     shs,
-                #     **kwargs) -> dict:
                 render_num = torch.logical_not(fg_motion_mask).sum()
                 render_pos = final_pos[:render_num, :]
                 render_rot = final_rot[:render_num, :]
@@ -937,33 +869,25 @@ class ArtVidTrainer():
                 }
                 
                 render_results = self.model.renderer.render_iter(**render_dict)
-                # # render_depth = render_results['rendered_features_split']['depth']
-                # # # render_depth_pil = tvF.to_pil_image(render_depth)
-                # # # render_depth_pil.save(self.debug_path / 'render_depth.png')
                 
-                # # render_opacity = render_results['rendered_features_split']['opacity']
-                # # # opacity_pil = tvF.to_pil_image(render_opacity)
-                # # # opacity_pil.save(self.debug_path / 'render_opa.png')
-                
-                # # gt_depth = batch['depth2'].to(render_depth).unsqueeze(0)
-                
-                # # abs_depth_loss = 10 * F.l1_loss(render_depth, gt_depth)
                 render_rgb = render_results['rendered_features_split']['rgb']
                 render_opacity = render_results['rendered_features_split']['opacity']
                 gt_rgb = batch['rgb2'].to(render_rgb).permute(2, 0, 1)
                 mask_render = render_rgb * render_opacity
                 mask_gt = gt_rgb * render_opacity
                 rgb_loss = self.model.compute_rgb_loss(mask_render, mask_gt)
-                # rgb_loss = 0.1*self.model.compute_rgb_loss(render_rgb, gt_rgb)
-                # add up the loss
-                # if i > 1500:
-                # loss = flow_loss + arap_reg #+ cd
-                # loss = flow_loss + arap_reg #+ abs_depth_loss
-                loss = flow_loss + arap_reg + rgb_loss #+ 0 * loftr_loss
+                
+                
+                
+                
+                loss = flow_loss + arap_reg + rgb_loss + local_rot + local_trans
+                
+                
+                #+ 0 * loftr_loss
                 loss.backward()
                 self.motion_optimizer.step()
                 self.motion_scheduler.step()
-                # postfix = f'loss: {loss.item():.4f}, flow_loss: {flow_loss.item():.4f}, arap_reg: {arap_reg.item():.4f}'
+                
                 
                 postfix = {
                     'loss': f'{loss.item():4f}',
@@ -971,14 +895,20 @@ class ArtVidTrainer():
                     # 'cd': f'{0:.2f}'
                     # 'depth_loss': f'{abs_depth_loss:0.4f}'
                     'rgb_loss': f'{rgb_loss.item():4f}',
+                    'rot': f'{local_rot.item():4f}',
+                    'trans': f'{local_trans.item():4f}',
                     # 'loftr_loss': f'{loftr_loss.item():4f}',
                     # 'cd': f'{cd.item():.4f}'
                     'arap_reg': f'{arap_reg.item():4f}'
+                    
                 }
                 
                 pbar.set_postfix(postfix)
                 pbar.update(1)
                 pass
+        
+        # update point cloud with estimated motion
+        self.update_gaussians_after_motion(pos=render_pos, rot=render_rot)
         
         # save output for visualization
         self.position_to_ply(self.debug_path / 'world_coords.ply', render_pos[:, :3])
@@ -1013,20 +943,19 @@ class ArtVidTrainer():
         self.position_to_ply(self.debug_path / 'combine_after.ply', combine)
         
         vis_flow = visualize_flow(batch)
-        # vis_flow_pil = tvF.to_pil_image(torch.Tensor(vis_flow).permute(2, 0, 1))
-        # vis_flow_pil.save(self.debug_path / 'vis_flow.png')
-        cv2.imwrite(str(self.debug_path / 'vis_flow.png'), vis_flow)
         
-        # estimate scale based on the optical flow points
-        # flow_final_pos = final_pos[flow_mask.bool()]
-        # batch['flow_final_pos'] = flow_final_pos
-        # batch['flow_final_uv'] = flow_pos_pred
-        # batch['final_pos'] = final_pos
-        # batch['pts_with_flow'] = pts_with_flow
-        # batch['flow_dst_valid'] = flow_dst_valid
+        cv2.imwrite(str(self.debug_path / 'vis_flow.png'), vis_flow)
         
         return batch
         # pass
+        
+    def update_gaussians_after_motion(self, pos, rot):
+        self.model.point_cloud.position = torch.nn.Parameter(pos.detach().to(self.device), requires_grad=True)
+        self.model.point_cloud.rotation = torch.nn.Parameter(rot.detach().to(self.device), requires_grad=True)
+        del self.optimizer
+        del self.schedulers
+        self.setup_for_training()
+        
         
     def optimize_new_frame(self, batch):
         from pointrix.model.point_cloud import parse_point_cloud
@@ -1050,8 +979,8 @@ class ArtVidTrainer():
         rotation = self.model.point_cloud.get_rotation.detach()
         shs = self.model.point_cloud.get_shs.detach()
         
-        final_pos = compute_dynamic_position(position, self.motion_list[-1], detach=True)
-        final_rot = compute_dynamic_rotation(rotation, self.motion_list[-1], detach=True)
+        # final_pos = compute_dynamic_position(position, self.motion_list[-1], detach=True)
+        # final_rot = compute_dynamic_rotation(rotation, self.motion_list[-1], detach=True)
         
         # check opacity difference
         
@@ -1062,9 +991,9 @@ class ArtVidTrainer():
                         'extrinsic_matrix': ext,
                         'intrinsic_params': intr,
                         'camera_center': cam_center,
-                        'position': final_pos,
+                        'position': position,
                         # 'rotation': rotation,
-                        'rotation': final_rot,
+                        'rotation': rotation,
                         'opacity': opacity,
                         'scaling': scaling,
                         'shs': shs,
@@ -1086,6 +1015,8 @@ class ArtVidTrainer():
         global_cfg = self.model.cfg.point_cloud
         global_cfg.point_cloud_type = "GaussianPointCloud_scale_depth"
         
+        
+        # scaled_depth = 
         local_pipeline = pseudo_datapipeline()
         local_pipeline.point_cloud = None
         local_pipeline.depth = depth2
@@ -1132,14 +1063,15 @@ class ArtVidTrainer():
         with tqdm(total=self.cfg.pose_free.local_steps, position=0, leave=True) as pbar:
             for i in range(self.cfg.pose_free.local_steps):
                 # construct render dict
+                
                 local_pos = local_point_cloud.get_position#[cur_prune_mask]
                 local_rot = local_point_cloud.get_rotation#[cur_prune_mask]
                 local_opa = local_point_cloud.get_opacity#[cur_prune_mask]
                 local_shs = local_point_cloud.get_shs#[cur_prune_mask]
                 local_scaling = local_point_cloud.get_scaling#[cur_prune_mask]
                 
-                render_pos = torch.cat([final_pos, local_pos], dim=0)
-                render_rot = torch.cat([final_rot, local_rot], dim=0)
+                render_pos = torch.cat([position, local_pos], dim=0)
+                render_rot = torch.cat([rotation, local_rot], dim=0)
                 render_opa = torch.cat([opacity, local_opa], dim=0)
                 render_shs = torch.cat([shs, local_shs], dim=0)
                 render_scal = torch.cat([scaling, local_scaling], dim=0)
@@ -1214,7 +1146,7 @@ class ArtVidTrainer():
                 self.position_to_ply(self.debug_path / fname, render_pos)
         del self.optimizer
         del self.schedulers
-        self.update_global_pos_rot()
+        # self.update_global_pos_rot()
         self.merge_local_point_cloud(local_point_cloud)
         self.setup_for_training()
         pass

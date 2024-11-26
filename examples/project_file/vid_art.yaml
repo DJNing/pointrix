@@ -16,7 +16,7 @@ trainer:
     end_t_lr: 1e-4
     color_steps: 10000
     k_clusters: 128
-    frame_interval: 6
+    frame_interval: 3
 
   model:
     name: VidArtModel

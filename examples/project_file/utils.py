@@ -757,6 +757,7 @@ def compute_dynamic_rotation(cur_q, motion_params, detach=False, forward=True, l
     new_q = apply_quaternion(cur_q, valid_q, forward=forward)
     return new_q
 
+
 def connect_keypoints(image_1, image_2, kps_1, kps_2):
     # Ensure keypoints are numpy arrays
     # kps_1 = np.array(kps_1, dtype=np.float32)
